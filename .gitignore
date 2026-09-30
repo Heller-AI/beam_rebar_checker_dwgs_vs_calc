@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Streamlit secrets (API keys etc.) - never commit
+.streamlit/secrets.toml
+
+# Environment files - real keys stay local; .env.example is kept on purpose
+.env
+.env.*
+!.env.example
+
+# Keys, certificates, logs
+*.key
+*.pem
+*.log
+
+# Project data - drawings / calc reports are confidential, keep out of the repo
+sample_data/*
+!sample_data/README.md
+
+# Legacy desktop build
+legacy/*.exe
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
