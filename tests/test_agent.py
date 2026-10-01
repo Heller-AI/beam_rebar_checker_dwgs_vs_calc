@@ -30,11 +30,13 @@ def test_beam_detail_base_and_span_mark():
 def test_evaluate_and_suggest():
     assert agent.execute_tool("evaluate_rebar", {"notation": "3H16", "required_as_mm2": 500}, RESULT)["ok"]
     assert not agent.execute_tool("evaluate_stirrup", {"notation": "2H10-200", "required_asv_sv": 1.0}, RESULT)["ok"]
-    bars = agent.execute_tool("suggest_bars", {"required_as_mm2": 500, "max_bars": 4}, RESULT)["options"]
-    assert bars and all(o["area_mm2"] >= 500 for o in bars)
-    assert bars == sorted(bars, key=lambda o: o["area_mm2"])
-    links = agent.execute_tool("suggest_stirrups", {"required_asv_sv": 1.0, "max_spacing_mm": 150}, RESULT)["options"]
-    assert links and all(o["asv_sv"] >= 1.0 for o in links)
+    bars = agent.execute_tool("suggest_bars", {"required_as_mm2": 500, "beam_width_mm": 300}, RESULT)
+    assert bars["area"] >= 500 and bars["fit"] == "fits the width" and bars["beam_width_mm"] == 300
+    unknown = agent.execute_tool("suggest_bars", {"required_as_mm2": 500, "beam_width_mm": 0}, RESULT)
+    assert unknown["fit"] == "width unknown, fit not checked"
+    links = agent.execute_tool("suggest_stirrups", {"required_asv_sv": 1.0, "max_spacing_mm": 150,
+                                                    "beam_width_mm": 300}, RESULT)
+    assert links["asv_sv"] >= 1.0 and int(links["suggestion"].split("-")[1]) <= 150
 
 
 class FakeClient:

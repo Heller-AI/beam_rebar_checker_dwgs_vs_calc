@@ -5,12 +5,11 @@ the tools below, which reuse the same parsers as the checker.
 """
 
 import json
-import math
-from itertools import product
 
 import anthropic
 import requests
 
+from . import fixes
 from .checker import RESULT_COLUMNS
 from .parsers import normalize_str, parse_bar_notation, parse_stirrup_single_str
 from .prompts import ASSISTANT_SYSTEM_PROMPT
@@ -26,12 +25,24 @@ MODELS = {
 MAX_TOOL_ROUNDS = 10
 DEFAULT_MAX_OUTPUT_TOKENS = 16000
 
-BAR_DIAS = [10, 13, 16, 20, 25, 32, 40]
-LINK_DIAS = [8, 10, 12, 13, 16]
-
 SYSTEM_PROMPT = ASSISTANT_SYSTEM_PROMPT
 
 TOOLS = [
+    {
+        "name": "get_failures",
+        "description": "Every FAIL in one call: one row per failing check (flexure and shear on separate rows, one "
+                       "unit each) with required, provided, shortfall and provided/required (%), plus counts to quote "
+                       "as facts. with_fixes=true adds the smallest bar or stirrup change per row, computed by the app "
+                       "and checked against the beam width when it is known. Use this for any question about all "
+                       "failures, shortfalls or fixes instead of calling other tools per row.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"with_fixes": {"type": "boolean"}},
+            "required": ["with_fixes"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
     {
         "name": "get_summary",
         "description": "Overall results: spans checked, OK/FAIL row counts, list of beam marks with any FAIL, and beams missing from either file.",
@@ -93,28 +104,32 @@ TOOLS = [
     },
     {
         "name": "suggest_bars",
-        "description": "Smallest bar arrangements (one or two diameters, up to max_bars in total) whose area is at least the required As. Returns up to 8 options sorted by area.",
+        "description": "For one what-if question: the smallest bar arrangement (at most 2 layers) whose area is at "
+                       "least the required As, checked against the beam width. For all FAIL rows use get_failures.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "required_as_mm2": {"type": "number"},
-                "max_bars": {"type": "integer", "description": "Maximum total number of bars, e.g. 6 for one layer in a narrow beam."},
+                "beam_width_mm": {"type": "number", "description": "Beam width in mm; 0 if unknown."},
             },
-            "required": ["required_as_mm2", "max_bars"],
+            "required": ["required_as_mm2", "beam_width_mm"],
             "additionalProperties": False,
         },
         "strict": True,
     },
     {
         "name": "suggest_stirrups",
-        "description": "Smallest stirrup arrangements (2-4 legs, spacing 75-300 mm in 25 mm steps) whose Asv/sv is at least the required value. Returns up to 8 options.",
+        "description": "For one what-if question: the smallest stirrup arrangement (2-4 legs, spacing 75 mm up to "
+                       "max_spacing_mm) whose Asv/sv is at least the required value; legs limited by the beam width. "
+                       "For all FAIL rows use get_failures.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "required_asv_sv": {"type": "number"},
                 "max_spacing_mm": {"type": "integer", "description": "Upper limit on spacing, e.g. from code max-spacing rules."},
+                "beam_width_mm": {"type": "number", "description": "Beam width in mm; 0 if unknown."},
             },
-            "required": ["required_asv_sv", "max_spacing_mm"],
+            "required": ["required_asv_sv", "max_spacing_mm", "beam_width_mm"],
             "additionalProperties": False,
         },
         "strict": True,
@@ -187,50 +202,15 @@ def _evaluate_stirrup(notation, required_asv_sv):
     }
 
 
-def _bar_area(n, d):
-    return n * math.pi * d * d / 4.0
+def _suggest_bars(required_as_mm2, beam_width_mm):
+    width = beam_width_mm or None
+    return {"required_as_mm2": required_as_mm2, "beam_width_mm": width, **fixes.suggest_bars(required_as_mm2, width)}
 
 
-def _suggest_bars(required_as_mm2, max_bars):
-    max_bars = max(2, min(int(max_bars), 12))
-    options = []
-    for d in BAR_DIAS:
-        for n in range(2, max_bars + 1):
-            a = _bar_area(n, d)
-            if a >= required_as_mm2:
-                options.append((a, f"{n}H{d}"))
-                break
-    for d1, d2 in product(BAR_DIAS, BAR_DIAS):
-        if d2 >= d1:
-            continue
-        for n1, n2 in product(range(2, max_bars + 1), range(1, max_bars + 1)):
-            if n1 + n2 > max_bars:
-                continue
-            a = _bar_area(n1, d1) + _bar_area(n2, d2)
-            if a >= required_as_mm2:
-                options.append((a, f"{n1}H{d1}+{n2}H{d2}"))
-    options.sort()
-    seen, out = set(), []
-    for a, s in options:
-        if s not in seen:
-            seen.add(s)
-            out.append({"notation": s, "area_mm2": round(a, 1), "ratio_pct": round(a / required_as_mm2 * 100, 1) if required_as_mm2 > 0 else None})
-        if len(out) == 8:
-            break
-    return {"required_as_mm2": required_as_mm2, "options": out or "No arrangement within max_bars; increase max_bars or use more layers."}
-
-
-def _suggest_stirrups(required_asv_sv, max_spacing_mm):
-    options = []
-    for legs, d, s in product((2, 3, 4), LINK_DIAS, range(75, 301, 25)):
-        if s > max_spacing_mm:
-            continue
-        asv = legs * math.pi * d * d / 4.0 / s
-        if asv >= required_asv_sv:
-            options.append((round(asv, 3), legs, -s, f"{legs}H{d}-{s}"))
-    options.sort()
-    out = [{"notation": o[3], "asv_sv": o[0]} for o in options[:8]]
-    return {"required_asv_sv": required_asv_sv, "options": out or "No arrangement within limits."}
+def _suggest_stirrups(required_asv_sv, max_spacing_mm, beam_width_mm):
+    width = beam_width_mm or None
+    return {"required_asv_sv": required_asv_sv, "beam_width_mm": width,
+            **fixes.suggest_stirrups(required_asv_sv, width, max_spacing_mm)}
 
 
 SCHEDULE_TOOL = {
@@ -253,7 +233,9 @@ def zhipu_tools_for(schedule):
                                               "parameters": t["input_schema"]}} for t in tools_for(schedule)]
 
 
-def execute_tool(name, args, result, schedule=None):
+def execute_tool(name, args, result, schedule=None, widths=None):
+    if name == "get_failures":
+        return fixes.failures_table(result, bool(args.get("with_fixes")), widths)
     if name == "get_schedule_source":
         if not schedule:
             return {"error": "The schedule came from an Excel file; there is no drawing source information."}
@@ -269,9 +251,10 @@ def execute_tool(name, args, result, schedule=None):
     if name == "evaluate_stirrup":
         return _evaluate_stirrup(args["notation"], float(args["required_asv_sv"]))
     if name == "suggest_bars":
-        return _suggest_bars(float(args["required_as_mm2"]), args["max_bars"])
+        return _suggest_bars(float(args["required_as_mm2"]), float(args.get("beam_width_mm") or 0))
     if name == "suggest_stirrups":
-        return _suggest_stirrups(float(args["required_asv_sv"]), args["max_spacing_mm"])
+        return _suggest_stirrups(float(args["required_asv_sv"]), int(args.get("max_spacing_mm") or 300),
+                                 float(args.get("beam_width_mm") or 0))
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -279,10 +262,10 @@ class ProviderError(Exception):
     """A provider call failed; the message is safe to show to the user."""
 
 
-def _run_tool_json(name, args, result, schedule=None):
+def _run_tool_json(name, args, result, schedule=None, widths=None):
     """Run a tool and return (json_text, is_error)."""
     try:
-        return json.dumps(execute_tool(name, args, result, schedule), ensure_ascii=False), False
+        return json.dumps(execute_tool(name, args, result, schedule, widths), ensure_ascii=False), False
     except Exception as e:
         return f"Error: {e}", True
 
@@ -290,7 +273,7 @@ def _run_tool_json(name, args, result, schedule=None):
 # ------------------------------------------------------------------ Anthropic (Claude)
 
 def ask(client, messages, result, model=DEFAULT_MODEL, on_tool=None, on_request=None,
-        max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, schedule=None):
+        max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, schedule=None, widths=None):
     """Claude tool loop. `messages` already ends with the user's question and is extended in
     place (assistant turns and tool results) so it can be kept for follow-up questions.
     `on_tool(name, args)` is called before each tool runs. `on_request()` is called before
@@ -327,7 +310,7 @@ def ask(client, messages, result, model=DEFAULT_MODEL, on_tool=None, on_request=
         for tu in tool_uses:
             if on_tool:
                 on_tool(tu.name, tu.input)
-            content, is_error = _run_tool_json(tu.name, tu.input, result, schedule)
+            content, is_error = _run_tool_json(tu.name, tu.input, result, schedule, widths)
             block = {"type": "tool_result", "tool_use_id": tu.id, "content": content}
             if is_error:
                 block["is_error"] = True
@@ -374,7 +357,7 @@ ZHIPU_TIMEOUT_S = 180
 DEFAULT_ZHIPU_MODEL = "glm-5.3-flash"
 
 def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None, on_request=None,
-              max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, post=requests.post, schedule=None):
+              max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, post=requests.post, schedule=None, widths=None):
     """GLM tool loop over OpenAI-style `messages` (no system message; it is added per request).
     Same contract as `ask`. `post` is injectable for tests.
     """
@@ -430,7 +413,7 @@ def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None
             else:
                 if on_tool:
                     on_tool(name, args)
-                content, _ = _run_tool_json(name, args, result, schedule)
+                content, _ = _run_tool_json(name, args, result, schedule, widths)
             messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": content})
 
     return "Stopped after too many tool calls. Try a more specific question."

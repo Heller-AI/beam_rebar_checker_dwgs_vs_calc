@@ -80,7 +80,7 @@ def clear_chat():
     st.session_state["chat_display"], st.session_state["chat_api"] = [], []
 
 
-def render_assistant(result, provider, api_key, model, key_mode, limits, secrets, schedule=None):
+def render_assistant(result, provider, api_key, model, key_mode, limits, secrets, schedule=None, widths=None):
     st.caption(
         "Ask questions about the results. Numbers come from the checker's own formulas via tools; "
         "suggestions still need an engineer's review."
@@ -134,7 +134,7 @@ def render_assistant(result, provider, api_key, model, key_mode, limits, secrets
 
             api_messages.append({"role": "user", "content": question})
             kwargs = dict(model=model, on_tool=on_tool, on_request=on_request, max_tokens=limits["max_tokens"],
-                          schedule=schedule)
+                          schedule=schedule, widths=widths)
             try:
                 if provider == "zhipu":
                     answer = agent.ask_zhipu(api_key, api_messages, result, **kwargs)
@@ -708,7 +708,7 @@ if result is not None and from_drawing and st.session_state.get("current_table")
 # ---------------------------------------------------------------- 3. Results (same in both modes)
 # The tabs are always shown, so the AI Assistant is easy to find; they fill in once a comparison has run.
 NOT_RUN_NOTE = "Run a comparison to see results."
-df_all, schedule_ctx = None, None
+df_all, schedule_ctx, beam_widths = None, None, None
 
 if result is not None:
     df_all = result.to_dataframe()
@@ -727,6 +727,10 @@ if result is not None:
                 "discrepancies to double-check.")
         schedule_ctx = drawing_reader.schedule_summary(ctx["table"], ctx.get("method"), result.pdf_only,
                                                        result.excel_only, n_total, n_found, ctx.get("notes"))
+        # beam widths from the reviewed drawing table, for width-aware fix suggestions
+        beam_widths = {str(m).strip(): plausibility.beam_width(sz)
+                       for m, sz in zip(ctx["table"]["Beam mark"], ctx["table"]["Size"])
+                       if str(m).strip() and plausibility.beam_width(sz)}
 
     if result.matched_count == 0:
         where = "the reviewed drawing table" if from_drawing else f"sheet '{st.session_state.get('sheet')}'"
@@ -806,7 +810,8 @@ with tab_ai:
             render_sign_in_notice(ai_provider)
         st.info(NOT_RUN_NOTE + " Then ask the assistant about them here.")
     else:
-        render_assistant(result, ai_provider, api_key, ai_model, key_mode, limits, secrets_to_hide, schedule_ctx)
+        render_assistant(result, ai_provider, api_key, ai_model, key_mode, limits, secrets_to_hide, schedule_ctx,
+                         beam_widths)
 
 if key_mode == "shared":
     left = limits["session"] - access.session_calls_used(st.session_state, "chat")
