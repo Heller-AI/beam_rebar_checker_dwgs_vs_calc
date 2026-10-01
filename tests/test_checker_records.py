@@ -78,3 +78,31 @@ def test_too_few_columns_gives_a_clear_error(tmp_path):
     pd.DataFrame([["MARK", "x"], ["B101", "2H16"]]).to_excel(path, header=False, index=False)
     with pytest.raises(ValueError, match="needs at least 14"):
         read_excel_schedule(path, None, "Format 2")
+
+
+def test_table_title_in_mark_column_is_not_a_beam(tmp_path):
+    fmt = "Format 2"
+    c = checker.EXCEL_FORMATS[fmt]
+
+    def r(mark=None, **cells):
+        row = [None] * 16
+        row[c["mark"]] = mark
+        for k, v in cells.items():
+            row[c[k]] = v
+        return row
+
+    header = r("MARK")
+    header[15] = "REMARK"                                                # keep all 16 columns in the file
+    grid = [header, r("B101-1", t1="3H16", t3="3H16", b1="2H16"), r(None, t1="1H12"),
+            r("LEVEL 2 BEAM SCHEDULE", t1="9H40"), r(None, t1="9H40"),       # title + junk rows after it
+            r("B102", t1="2H13", t3="2H13", b1="2H13")]
+    path = tmp_path / "s.xlsx"
+    pd.DataFrame(grid).to_excel(path, header=False, index=False)
+
+    records = read_excel_schedule(path, None, fmt)
+    assert [x.mark for x in records] == ["B101-1", "B102"]
+    assert [row["t1"] for row in records[0].rows] == ["3H16", "1H12"]   # the beam before the title is unchanged
+    assert checker.is_table_title("Beam Schedule (Level 2)") and not checker.is_table_title("BEAM SCHEDULE")
+    with mock.patch.object(checker, "extract_all_beams_from_pdf", return_value={"B101": {1: REQ}}):
+        res = checker.run_comparison(path, "unused.pdf", None, fmt)
+    assert res.excel_only == ["B102"]

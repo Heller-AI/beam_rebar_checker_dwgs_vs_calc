@@ -86,15 +86,28 @@ def _cell(row, idx):
     return str(row[idx]).strip() if pd.notna(row[idx]) else ""
 
 
+def is_table_title(val_mark):
+    """A title such as '... BEAM SCHEDULE' in the mark column (not one of the exact header words)."""
+    return val_mark.upper() not in HEADER_MARKS and "SCHEDULE" in val_mark.upper()
+
+
 def group_excel_spans(df, fmt):
-    """Group schedule rows by beam mark; a mark cell starts a new span, blank rows continue it."""
+    """Group schedule rows by beam mark; a mark cell starts a new span, blank rows continue it.
+
+    A table title in the mark column ends the current span, like a mark does, but is not a beam:
+    the rows after it are skipped until the next mark.
+    """
     col_mark = EXCEL_FORMATS[fmt]["mark"]
     span_groups = []
     curr_mark, curr_rows = None, []
 
     for _, row in df.iterrows():
         val_mark = _cell(row, col_mark)
-        if val_mark and val_mark.upper() not in HEADER_MARKS:
+        if val_mark and is_table_title(val_mark):
+            if curr_mark and curr_rows:
+                span_groups.append((curr_mark, curr_rows))
+            curr_mark, curr_rows = None, []
+        elif val_mark and val_mark.upper() not in HEADER_MARKS:
             if curr_mark and curr_rows:
                 span_groups.append((curr_mark, curr_rows))
             curr_mark, curr_rows = val_mark, [row]
