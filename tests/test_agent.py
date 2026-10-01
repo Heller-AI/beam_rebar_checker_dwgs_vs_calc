@@ -60,7 +60,7 @@ def test_agent_loop_runs_tools_then_answers():
     called = []
     answer = agent.ask(client, messages, RESULT, on_tool=lambda n, a: called.append(n))
 
-    assert answer == "2 rows fail."
+    assert answer.text == "2 rows fail." and answer.stop == "end_turn" and answer.requests == 2
     assert called == ["get_summary"]
     tool_result = messages[2]["content"][0]
     assert tool_result["tool_use_id"] == "t1" and json.loads(tool_result["content"])["rows_fail"] == 2
@@ -100,7 +100,7 @@ def test_zhipu_loop_runs_tools_then_answers():
     messages = [{"role": "user", "content": "Why does B101 fail?"}]
     answer = agent.ask_zhipu("k", messages, RESULT, post=post)
 
-    assert answer == "B101-1 fails flexure."
+    assert answer.text == "B101-1 fails flexure." and answer.requests == 2
     assert bodies[0]["messages"][0]["role"] == "system" and bodies[0]["tool_choice"] == "auto"
     assert messages[2]["role"] == "tool" and messages[2]["tool_call_id"] == "c1"
     assert len(json.loads(messages[2]["content"])["rows"]) == 3
@@ -129,8 +129,8 @@ def test_on_request_runs_before_every_model_call_and_can_stop_the_loop():
         raise access.BudgetExceeded("limit")
 
     client = FakeClient([])
-    with pytest.raises(access.BudgetExceeded):
-        agent.ask(client, [{"role": "user", "content": "x"}], RESULT, on_request=stop)
+    out = agent.ask(client, [{"role": "user", "content": "x"}], RESULT, on_request=stop)
+    assert out.stop == "call_cap" and out.text == "limit" and out.requests == 0
     assert client.requests == []  # nothing was sent
 
 
@@ -186,6 +186,6 @@ def test_assistant_uses_schedule_tool_with_claude():
     client.beta.messages.create = lambda **kw: (sent_tools.append([t["name"] for t in kw["tools"]]), real_create(**kw))[1]
     messages = [{"role": "user", "content": "Which beams are only on the drawing?"}]
     answer = agent.ask(client, messages, RESULT, schedule={"drawing_beams_not_in_prokon": ["B999"]})
-    assert answer == "B999 is only on the drawing."
+    assert answer.text == "B999 is only on the drawing."
     assert "get_schedule_source" in sent_tools[0]
     assert "B999" in messages[2]["content"][0]["content"]

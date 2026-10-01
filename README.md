@@ -72,7 +72,7 @@ How it behaves:
 - **Cost limits on the shared key:** each model request counts as one AI call (one question can take several, because the assistant looks things up with tools; a detailed question used about 5 in testing).
   - `MAX_AI_CALLS_PER_SESSION` (default 30) per browser session.
   - `MAX_AI_CALLS_PER_DAY` (default 300) for the whole app, shared by all users. It is kept in memory, so it **resets when the app restarts** (reboot, redeploy, or Streamlit Cloud putting the app to sleep).
-  - `MAX_OUTPUT_TOKENS` (default 4000) caps each response.
+  - `MAX_OUTPUT_TOKENS` (default 8000) caps each response, including the model's internal reasoning. If an answer is cut off, the app says so with the stop reason and still shows the tables it computed.
 - Keys and the code are never shown in the app, in error messages or in the tool-call log.
 
 These limits make casual misuse expensive, not impossible: a new browser session starts a fresh session cap. The daily cap and the spend limit in the provider console are the real ceiling, so set both.
@@ -87,6 +87,13 @@ These limits make casual misuse expensive, not impossible: a new browser session
 **On your own PC:** copy `.env.example` to `.env` (git-ignored) and fill in your keys. `.env` is never uploaded, so it has no effect on the online app.
 
 All settings (same names in `.env` and in Streamlit secrets): `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ZHIPU_API_KEY`, `ZHIPU_MODEL`, `ACTIVE_PROVIDER` (`anthropic` or `zhipu`, the sidebar default), `APP_PASSWORD`, `MAX_AI_CALLS_PER_SESSION`, `MAX_AI_CALLS_PER_DAY`, `MAX_OUTPUT_TOKENS`, and for drawing mode `MAX_DRAWING_PAGES`, `MAX_DRAWING_CALLS_PER_SESSION`, `DRAWING_MAX_OUTPUT_TOKENS`, `EXTRA_READING_RULES`.
+
+### How answers are built
+
+- Questions about all failures, shortfalls or fixes use one tool, `get_failures`, which returns a table computed by the app: one row per failing check (flexure and shear separately, one unit per cell), with required, provided, shortfall and **Provided / required (%)**, the counts as a fact sentence, and (for fixes) the smallest bar or stirrup change. The app draws this table itself above the model's comments, so it is readable even if the text is cut off.
+- Fix suggestions use the beam width from the drawing's Size column: at most 2 layers that fit the width (cover, links, minimum clear gap), never smaller bars than those provided. They are marked "fits the width", "does not fit, needs engineer", "no valid option found, needs engineer", or in Excel mode "width unknown, fit not checked". Spacing, anchorage, laps and detailing are not checked.
+- A typical question uses about 2 model calls (one tool request, one answer); at most 6 per question. The model runs with low reasoning effort, since the numbers come from code.
+- **Number check:** every number in an answer is matched against the tool results in the conversation. Numbers that cannot be traced are listed in a warning under the answer (the answer is never blocked).
 
 ### Models and cost
 

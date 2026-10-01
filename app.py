@@ -80,6 +80,54 @@ def clear_chat():
     st.session_state["chat_display"], st.session_state["chat_api"] = [], []
 
 
+TABLE_LABELS = {
+    "beam": "Beam", "position": "Position", "provided_as": "Provided now", "required": "Required",
+    "provided": "Provided", "shortfall": "Shortfall", "provided_over_required_pct": "Provided / required (%)",
+    "suggested_change": "Suggested change", "suggested_provides": "Suggested provides",
+    "suggested_over_required_pct": "Suggested / required (%)", "fit": "Fit",
+}
+
+
+def render_failure_tables(payload):
+    """A get_failures result, drawn by the app itself: counts as a fact line, then one table per check
+    so every cell has one unit (mm² for flexure, Asv/sv for shear)."""
+    st.markdown(f"**{payload['counts']['fact']}**")
+    rows = payload.get("rows", [])
+    for check, unit, decimals in (("Flexure", "mm²", 1), ("Shear", "Asv/sv, mm²/mm", 3)):
+        part = [r for r in rows if r["check"] == check]
+        if not part:
+            continue
+        df = pd.DataFrame(part)
+        cols = [c for c in TABLE_LABELS if c in df.columns]
+        df = df[cols]
+        for c in ("required", "provided", "shortfall", "suggested_provides"):
+            if c in df.columns:
+                df[c] = [f"{v:.{decimals}f}" if isinstance(v, (int, float)) else "-" for v in df[c]]
+        labels = {c: (f"{TABLE_LABELS[c]} ({unit})" if c in ("required", "provided", "shortfall", "suggested_provides")
+                      else TABLE_LABELS[c]) for c in cols}
+        st.markdown(f"*{check}*")
+        st.dataframe(df.rename(columns=labels), hide_index=True, width="stretch")
+    if payload.get("note"):
+        st.caption(payload["note"])
+
+
+def render_answer(entry):
+    """One assistant answer: tables computed by the app, then the model's text, then any warnings."""
+    if entry.get("tools"):
+        with st.expander(f"🔧 {len(entry['tools'])} tool call(s), {entry.get('requests', 0)} model call(s)"):
+            for t in entry["tools"]:
+                st.code(t, language="text")
+    for payload in entry.get("tables", []):
+        render_failure_tables(payload)
+    if entry.get("text"):
+        st.markdown(entry["text"])
+    if entry.get("stop_message"):
+        st.warning(entry["stop_message"])
+    if entry.get("untraceable"):
+        st.warning("⚠ These numbers in the answer could not be traced to a tool result in this conversation; "
+                   "check them before relying on them: " + ", ".join(entry["untraceable"]))
+
+
 def render_assistant(result, provider, api_key, model, key_mode, limits, secrets, schedule=None, widths=None):
     st.caption(
         "Ask questions about the results. Numbers come from the checker's own formulas via tools; "
@@ -98,11 +146,10 @@ def render_assistant(result, provider, api_key, model, key_mode, limits, secrets
 
     for msg in history:
         with st.chat_message(msg["role"]):
-            if msg.get("tools"):
-                with st.expander(f"🔧 {len(msg['tools'])} tool call(s)"):
-                    for t in msg["tools"]:
-                        st.code(t, language="text")
-            st.markdown(msg["text"])
+            if msg["role"] == "assistant":
+                render_answer(msg)
+            else:
+                st.markdown(msg["text"])
 
     questions = EXAMPLE_QUESTIONS + ([DRAWING_QUESTION] if schedule else [])
     cols = st.columns(len(questions))
@@ -120,7 +167,8 @@ def render_assistant(result, provider, api_key, model, key_mode, limits, secrets
 
     with st.chat_message("assistant"):
         tool_log = []
-        with st.status("Thinking...", expanded=False) as status:
+        entry = {"role": "assistant", "text": "", "tables": []}
+        with st.status("Looking up the results...", expanded=False) as status:
             def on_tool(name, args):
                 line = f"{name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
                 tool_log.append(line)
@@ -137,24 +185,32 @@ def render_assistant(result, provider, api_key, model, key_mode, limits, secrets
                           schedule=schedule, widths=widths)
             try:
                 if provider == "zhipu":
-                    answer = agent.ask_zhipu(api_key, api_messages, result, **kwargs)
+                    out = agent.ask_zhipu(api_key, api_messages, result, **kwargs)
                 else:
-                    answer = agent.ask(agent.make_client(api_key), api_messages, result, **kwargs)
-                status.update(label=f"Done ({len(tool_log)} tool call(s))", state="complete")
-            except access.BudgetExceeded as e:
-                answer = f"🛑 {e}"
-                status.update(label="Limit reached", state="error")
+                    out = agent.ask(agent.make_client(api_key), api_messages, result, **kwargs)
+                entry.update(text=out.text, tables=out.tables, requests=out.requests)
+                if out.stop != "end_turn":
+                    detail = f" (stop reason: {out.stop}"
+                    detail += f", MAX_OUTPUT_TOKENS = {limits['max_tokens']})" if out.stop == "max_tokens" else ")"
+                    shown = " The tables computed so far are shown above." if out.tables else ""
+                    entry["stop_message"] = out.stop_message + detail + shown
+                    if out.stop == "call_cap":
+                        entry["text"] = ""                 # the cap message is already in stop_message
+                        entry["stop_message"] = f"🛑 {out.text}{shown}"
+                entry["untraceable"] = agent.untraceable_numbers(entry["text"], api_messages, question)
+                status.update(label=f"Done ({out.requests} model call(s), {len(tool_log)} tool call(s))",
+                              state="complete" if out.stop == "end_turn" else "error")
             except agent.ProviderError as e:
-                answer = f"❌ {e}"
+                entry["text"] = f"❌ {e}"
                 status.update(label="Error", state="error")
             except anthropic.APIError as e:
-                answer = f"❌ {agent.describe_anthropic_error(e, model)}"
+                entry["text"] = f"❌ {agent.describe_anthropic_error(e, model)}"
                 status.update(label="Error", state="error")
-        answer = access.redact(answer, secrets)
-        tool_log = [access.redact(t, secrets) for t in tool_log]
-        st.markdown(answer)
+        entry["text"] = access.redact(entry["text"], secrets)
+        entry["tools"] = [access.redact(t, secrets) for t in tool_log]
+        render_answer({**entry, "tools": []})          # the live tool log is already in the status box above
 
-    history.append({"role": "assistant", "text": answer, "tools": tool_log})
+    history.append(entry)
 
 
 EXCEL_MODE = "Excel schedule"
@@ -601,7 +657,7 @@ with st.sidebar:
     limits = {
         "session": int_setting("MAX_AI_CALLS_PER_SESSION", env, 30),
         "daily": int_setting("MAX_AI_CALLS_PER_DAY", env, 300),
-        "max_tokens": int_setting("MAX_OUTPUT_TOKENS", env, 4000),
+        "max_tokens": int_setting("MAX_OUTPUT_TOKENS", env, 8000),
         "drawing_session": int_setting("MAX_DRAWING_CALLS_PER_SESSION", env, 40),
         "drawing_max_tokens": int_setting("DRAWING_MAX_OUTPUT_TOKENS", env, drawing_reader.DEFAULT_MAX_OUTPUT_TOKENS),
         "max_pages": int_setting("MAX_DRAWING_PAGES", env, drawing_reader.DEFAULT_MAX_PAGES),

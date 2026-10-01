@@ -5,11 +5,14 @@ the tools below, which reuse the same parsers as the checker.
 """
 
 import json
+import re
+from dataclasses import dataclass, field
 
 import anthropic
 import requests
 
 from . import fixes
+from .access import BudgetExceeded
 from .checker import RESULT_COLUMNS
 from .parsers import normalize_str, parse_bar_notation, parse_stirrup_single_str
 from .prompts import ASSISTANT_SYSTEM_PROMPT
@@ -22,8 +25,9 @@ MODELS = {
     "claude-opus-5-5": "Claude Opus 5.5 (higher quality, about 2x the cost)",
     "claude-opus-5": "Claude Opus 5 (higher quality, about 2.5x the cost)",
 }
-MAX_TOOL_ROUNDS = 10
+MAX_TOOL_ROUNDS = 6               # model calls per question at most
 DEFAULT_MAX_OUTPUT_TOKENS = 16000
+CHAT_EFFORT = "low"               # lookups: the tables are computed in code, so little reasoning is needed
 
 SYSTEM_PROMPT = ASSISTANT_SYSTEM_PROMPT
 
@@ -262,6 +266,81 @@ class ProviderError(Exception):
     """A provider call failed; the message is safe to show to the user."""
 
 
+STOP_TEXT = {
+    "max_tokens": "The answer was cut off: the model reached the output limit (MAX_OUTPUT_TOKENS).",
+    "call_cap": "The AI call limit for this session or day was reached before the answer was finished.",
+    "round_limit": f"The assistant stopped after {MAX_TOOL_ROUNDS} model calls without finishing.",
+    "refusal": "The model declined to answer this request. Try rephrasing the question.",
+}
+
+
+@dataclass
+class AskResult:
+    """One answered question. `tables` holds every get_failures result computed while answering, so the
+    app can show them even when the text is cut off or a limit stops the loop."""
+    text: str
+    stop: str = "end_turn"          # end_turn, max_tokens, refusal, call_cap or round_limit
+    requests: int = 0
+    tables: list = field(default_factory=list)
+
+    @property
+    def stop_message(self):
+        return STOP_TEXT.get(self.stop, "")
+
+
+def _keep_table(name, content, is_error, tables):
+    if name == "get_failures" and not is_error:
+        try:
+            tables.append(json.loads(content))
+        except ValueError:
+            pass
+
+
+# Numbers that are part of a bar/stirrup notation, beam mark or beam size are not "values" to trace
+_NOTATION = re.compile(r"\d*\s*H\s*\d+(?:\.\d+)?(?:\s*[-/]\s*\d+)?", re.IGNORECASE)
+_MARK = re.compile(r"\b[A-Za-z]+\d+[A-Za-z]?(?:-\d+)?\b")
+_SIZE = re.compile(r"\b\d+\s*[xX×]\s*\d+(?:/\d+)?\b")
+_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:,\d{3})*(?:\.\d+)?(?![\w])")
+
+
+def _numbers(text):
+    return [m.group(0).replace(",", "") for m in _NUMBER.finditer(text)]
+
+
+def _tool_texts(messages):
+    for m in messages:
+        content = m.get("content")
+        if m.get("role") == "tool" and isinstance(content, str):
+            yield content
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    yield str(block.get("content", ""))
+
+
+def untraceable_numbers(answer, messages, question=""):
+    """Numbers in an answer that do not match any tool result in the conversation (rounded to the
+    answer's precision). Small whole numbers (0-10) are ignored, as are digits inside bar notation,
+    beam marks and sizes. Used to warn, never to block."""
+    known = []
+    for text in [*_tool_texts(messages), question]:
+        for n in _numbers(text):
+            try:
+                known.append(float(n))
+            except ValueError:
+                pass
+    cleaned = _SIZE.sub(" ", _MARK.sub(" ", _NOTATION.sub(" ", answer)))
+    missing = []
+    for token in _numbers(cleaned):
+        value = float(token)
+        if value.is_integer() and 0 <= value <= 10:
+            continue
+        decimals = len(token.split(".")[1]) if "." in token else 0
+        if not any(abs(round(k, decimals) - value) < 1e-9 or abs(k - value) < 1e-9 for k in known):
+            missing.append(token)
+    return list(dict.fromkeys(missing))
+
+
 def _run_tool_json(name, args, result, schedule=None, widths=None):
     """Run a tool and return (json_text, is_error)."""
     try:
@@ -277,19 +356,27 @@ def ask(client, messages, result, model=DEFAULT_MODEL, on_tool=None, on_request=
     """Claude tool loop. `messages` already ends with the user's question and is extended in
     place (assistant turns and tool results) so it can be kept for follow-up questions.
     `on_tool(name, args)` is called before each tool runs. `on_request()` is called before
-    each model request and may raise to stop the loop (used for call budgets). `schedule` is the
-    drawing-source summary offered through get_schedule_source (None for Excel schedules).
+    each model request and may raise BudgetExceeded (call caps); the loop then stops and returns
+    what was computed. `schedule` is the drawing-source summary offered through
+    get_schedule_source (None for Excel schedules); `widths` maps beam marks to widths in mm.
+    Returns an AskResult.
     """
+    out = AskResult(text="")
     for _ in range(MAX_TOOL_ROUNDS):
-        if on_request:
-            on_request()
+        try:
+            if on_request:
+                on_request()
+        except BudgetExceeded as e:
+            out.stop, out.text = "call_cap", str(e)
+            return out
+        out.requests += 1
         response = client.beta.messages.create(
             model=model,
             max_tokens=max_tokens,
             system=SYSTEM_PROMPT,
             tools=tools_for(schedule),
             messages=messages,
-            output_config={"effort": "medium"},
+            output_config={"effort": CHAT_EFFORT},
             cache_control={"type": "ephemeral"},
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
@@ -297,27 +384,34 @@ def ask(client, messages, result, model=DEFAULT_MODEL, on_tool=None, on_request=
         messages.append({"role": "assistant", "content": response.content})
 
         if response.stop_reason == "refusal":
-            return "The model declined to answer this request. Try rephrasing the question."
+            out.stop, out.text = "refusal", STOP_TEXT["refusal"]
+            return out
 
         tool_uses = [b for b in response.content if b.type == "tool_use"]
         if response.stop_reason != "tool_use" or not tool_uses:
-            text = "\n".join(b.text for b in response.content if b.type == "text").strip()
-            if response.stop_reason == "max_tokens":
-                text += "\n\n_(Answer was cut off; ask a narrower question.)_"
-            return text or "(No answer returned.)"
+            out.text = "\n".join(b.text for b in response.content if b.type == "text").strip()
+            out.stop = "max_tokens" if response.stop_reason == "max_tokens" else "end_turn"
+            if not out.text and out.stop == "end_turn":
+                out.text = "(No answer text returned.)"
+            return out
+        if response.stop_reason == "max_tokens":         # cut off in the middle of a tool call
+            out.stop = "max_tokens"
+            return out
 
         tool_results = []
         for tu in tool_uses:
             if on_tool:
                 on_tool(tu.name, tu.input)
             content, is_error = _run_tool_json(tu.name, tu.input, result, schedule, widths)
+            _keep_table(tu.name, content, is_error, out.tables)
             block = {"type": "tool_result", "tool_use_id": tu.id, "content": content}
             if is_error:
                 block["is_error"] = True
             tool_results.append(block)
         messages.append({"role": "user", "content": tool_results})
 
-    return "Stopped after too many tool calls. Try a more specific question."
+    out.stop = "round_limit"
+    return out
 
 
 def make_client(api_key):
@@ -359,13 +453,19 @@ DEFAULT_ZHIPU_MODEL = "glm-5.3-flash"
 def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None, on_request=None,
               max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, post=requests.post, schedule=None, widths=None):
     """GLM tool loop over OpenAI-style `messages` (no system message; it is added per request).
-    Same contract as `ask`. `post` is injectable for tests.
+    Same contract as `ask` (returns an AskResult). `post` is injectable for tests.
     """
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    out = AskResult(text="")
 
     for _ in range(MAX_TOOL_ROUNDS):
-        if on_request:
-            on_request()
+        try:
+            if on_request:
+                on_request()
+        except BudgetExceeded as e:
+            out.stop, out.text = "call_cap", str(e)
+            return out
+        out.requests += 1
         body = {
             "model": model,
             "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
@@ -398,10 +498,11 @@ def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None
         messages.append(assistant_turn)
 
         if not tool_calls:
-            text = (message.get("content") or "").strip()
-            if choice.get("finish_reason") == "length":
-                text += "\n\n_(Answer was cut off; ask a narrower question.)_"
-            return text or "(No answer returned.)"
+            out.text = (message.get("content") or "").strip()
+            out.stop = "max_tokens" if choice.get("finish_reason") == "length" else "end_turn"
+            if not out.text and out.stop == "end_turn":
+                out.text = "(No answer text returned.)"
+            return out
 
         for call in tool_calls:
             fn = call.get("function", {})
@@ -413,7 +514,9 @@ def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None
             else:
                 if on_tool:
                     on_tool(name, args)
-                content, _ = _run_tool_json(name, args, result, schedule, widths)
+                content, is_error = _run_tool_json(name, args, result, schedule, widths)
+                _keep_table(name, content, is_error, out.tables)
             messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": content})
 
-    return "Stopped after too many tool calls. Try a more specific question."
+    out.stop = "round_limit"
+    return out
