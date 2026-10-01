@@ -71,6 +71,11 @@ PROVIDERS = {
 }
 
 
+def render_sign_in_notice(provider):
+    st.warning("🔑 **Sign in with the access code in the sidebar to use the assistant.** "
+               f"(Or open \"Use my own API key instead\" there and enter a {PROVIDERS[provider]['label']} key.)")
+
+
 def clear_chat():
     st.session_state["chat_display"], st.session_state["chat_api"] = [], []
 
@@ -88,8 +93,7 @@ def render_assistant(result, provider, api_key, model, key_mode, limits, secrets
     api_messages = st.session_state.setdefault("chat_api", [])
 
     if not api_key:
-        st.warning("🔑 **Sign in with the access code in the sidebar to use the assistant.** "
-                   f"(Or open \"Use my own API key instead\" there and enter a {PROVIDERS[provider]['label']} key.)")
+        render_sign_in_notice(provider)
         return
 
     for msg in history:
@@ -681,10 +685,13 @@ if result is not None and from_drawing and st.session_state.get("current_table")
     result = None
 
 # ---------------------------------------------------------------- 3. Results (same in both modes)
+# The tabs are always shown, so the AI Assistant is easy to find; they fill in once a comparison has run.
+NOT_RUN_NOTE = "Run a comparison to see results."
+df_all, schedule_ctx = None, None
+
 if result is not None:
     df_all = result.to_dataframe()
     n_fail = int((df_all["Overall Status"] == "FAIL").sum())
-    schedule_ctx = None
 
     if from_drawing:
         ctx = st.session_state.get("drawing_result_ctx", {})
@@ -713,13 +720,16 @@ if result is not None:
     m3.metric("FAIL rows", n_fail)
     m4.metric("Unmatched beams", len(result.pdf_only) + len(result.excel_only))
 
-    if from_drawing:
-        tab_results, tab_findings, tab_ai = st.tabs(["📋 Results", "🔎 Findings to check", "🤖 AI Assistant"])
-    else:
-        tab_results, tab_ai = st.tabs(["📋 Results", "🤖 AI Assistant"])
-        tab_findings = None
+if source == DRAWING_MODE:
+    tab_results, tab_findings, tab_ai = st.tabs(["📋 Results", "🔎 Findings to check", "🤖 AI Assistant"])
+else:
+    tab_results, tab_ai = st.tabs(["📋 Results", "🤖 AI Assistant"])
+    tab_findings = None
 
-    with tab_results:
+with tab_results:
+    if result is None:
+        st.info(NOT_RUN_NOTE + (f" Upload both files and click **{RUN_LABEL}**." if source == EXCEL_MODE else ""))
+    else:
         with st.container(border=True):
             st.subheader("Comparison results (3 position rows per span)")
 
@@ -762,14 +772,20 @@ if result is not None:
             else:
                 st.dataframe(unmatched, hide_index=True, width="stretch")
 
-    if tab_findings is not None:
-        with tab_findings:
+if tab_findings is not None:
+    with tab_findings:
+        if result is None:
+            st.info(NOT_RUN_NOTE)
+        else:
             render_findings(df_all, result, st.session_state.get("drawing_result_ctx", {}))
 
-    with tab_ai:
+with tab_ai:
+    if result is None:
+        if not api_key:
+            render_sign_in_notice(ai_provider)
+        st.info(NOT_RUN_NOTE + " Then ask the assistant about them here.")
+    else:
         render_assistant(result, ai_provider, api_key, ai_model, key_mode, limits, secrets_to_hide, schedule_ctx)
-elif source == EXCEL_MODE:
-    st.info(f"Upload both files and click **{RUN_LABEL}** to start.")
 
 if key_mode == "shared":
     left = limits["session"] - access.session_calls_used(st.session_state, "chat")

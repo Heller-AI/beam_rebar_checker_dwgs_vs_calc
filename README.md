@@ -117,7 +117,7 @@ Drawings can be older than the calculation. The purpose of drawing mode is to **
 
 1. **Input files** (same box in both modes): Schedule source; the schedule on the left (Excel upload, sheet and format, or the drawing upload with its reading result such as "42 rows found, cost $0" and the reading method); the Prokon report on the right (one upload shared by both modes).
 2. **Review drawing schedule** (drawing mode only): coverage line, review table, **Check one beam against Prokon**, **⬇ Download schedule as Excel (Type 2 layout)**, then **▶ Run comparison (all beams)** (enabled straight away for text-layer rows; rows read by AI vision must be ticked first).
-3. **Results** (identical in both modes): success line, metrics, then the tabs **Results** | **Findings to check** (drawing mode only) | **AI Assistant**. The Results tab ends with an always-visible **Unmatched beams** table ("Beam mark", "Where").
+3. **Results** (identical in both modes): the tabs **Results** | **Findings to check** (drawing mode only) | **AI Assistant** are shown from the start, with "Run a comparison to see results" until a comparison has run; then the success line and metrics appear above them. The Results tab ends with an always-visible **Unmatched beams** table ("Beam mark", "Where").
 
 ### Review, coverage and findings
 
