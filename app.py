@@ -383,7 +383,8 @@ def table_row_for(table, mark):
 def show_beam_table(row, checks, title, note=""):
     """A full-width, readable table for one beam span (Left / Middle / Right)."""
     page = _page_text(row)
-    st.markdown(f"**{title}** · {page} · read from {row['Read from'] or 'manual entry'}" + (f" · {note}" if note else ""))
+    st.markdown(f"**{title}** · {page} · read from {row['Read from'] or 'manual entry'}" + (f" · {note}" if note else "")
+                + "  " + chr(10) + "Top bars / Bottom bars / Stirrups are the drawing's values.")
     st.dataframe(drawing_reader.beam_detail(row, checks), hide_index=True, width="stretch")
 
 

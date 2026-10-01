@@ -169,9 +169,12 @@ def test_beam_detail_table_shows_drawing_values_and_checks():
         res = checker.run_comparison_records(dr.table_to_records(table[table["Beam mark"] == "B101-1"]), "x.pdf")
     detail = dr.beam_detail(row, res.rows)
     assert list(detail["Position"]) == ["Left", "Middle", "Right"]
-    assert list(detail["Top (drawing)"]) == ["3H16", "2H16", "3H16"]
-    assert detail.loc[1, "Bottom (drawing)"] == "2H16+2H13" and detail.loc[1, "Checked"] == "bottom bars"
+    assert list(detail.columns[:2]) == ["Position", "Result"]                 # the verdict is visible first
+    assert list(detail["Top bars"]) == ["3H16", "2H16", "3H16"]
+    assert detail.loc[1, "Bottom bars"] == "2H16+2H13" and detail.loc[1, "Checked"] == "bottom"
     assert list(detail["Result"]) == [r[12] for r in res.rows] and detail.loc[2, "Result"] == "FAIL"
+    assert detail.loc[2, "As req → prov (mm²)"] == f"{res.rows[2][2]} → {res.rows[2][4]}"
+    assert detail.loc[2, "Flexure"] == "FAIL"
     assert "Result" not in dr.beam_detail(row).columns            # drawing values only (no Prokon match)
 
 

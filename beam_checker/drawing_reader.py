@@ -645,16 +645,21 @@ def beam_detail(row, checks=None):
 
     The checker compares top bars at the supports and bottom bars at mid-span; "Checked" says which.
     """
+    def status(text):
+        return "FAIL" if str(text).startswith("FAIL") else str(text)
+
     out = []
     for i, (pos, t, b, st) in enumerate(POSITIONS):
-        rec = {"Position": pos, "Top (drawing)": _cell(row[t]), "Bottom (drawing)": _cell(row[b]),
-               "Stirrups (drawing)": _cell(row[st])}
+        rec = {"Position": pos}
+        if checks is not None:
+            rec["Result"] = checks[i][12]
+        rec.update({"Top bars": _cell(row[t]), "Bottom bars": _cell(row[b]), "Stirrups": _cell(row[st])})
         if checks is not None:
             c = checks[i]
             rec.update({
-                "Checked": "bottom bars" if pos == "Middle" else "top bars",
-                "As required (mm²)": c[2], "As provided (mm²)": c[4], "Flexure": c[6],
-                "Asv/sv required": c[7], "Asv/sv provided": c[9], "Shear": c[11], "Result": c[12],
+                "Checked": "bottom" if pos == "Middle" else "top",
+                "As req → prov (mm²)": f"{c[2]} → {c[4]}", "Flexure": status(c[6]),
+                "Asv/sv req → prov": f"{c[7]} → {c[9]}", "Shear": status(c[11]),
             })
         out.append(rec)
     return pd.DataFrame(out)
