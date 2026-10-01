@@ -87,7 +87,17 @@ These limits make casual misuse expensive, not impossible: a new browser session
 
 All settings (same names in `.env` and in Streamlit secrets): `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ZHIPU_API_KEY`, `ZHIPU_MODEL`, `ACTIVE_PROVIDER` (`anthropic` or `zhipu`, the sidebar default), `APP_PASSWORD`, `MAX_AI_CALLS_PER_SESSION`, `MAX_AI_CALLS_PER_DAY`, `MAX_OUTPUT_TOKENS`.
 
-Cost is roughly a few US cents per question with Claude Opus 5.5, and about half that with Sonnet 5.5 (you can pick the model in the sidebar). Longer conversations cost more per question because the history is resent.
+### Models and cost
+
+Pick the Anthropic model in the sidebar. `ANTHROPIC_MODEL` sets the starting choice; any other model ID you put there appears as a "custom" option, and an unknown or retired ID gives a clear error message instead of a crash.
+
+| Model | API ID | Price per million tokens (input / output) | Measured cost per question |
+|---|---|---|---|
+| Claude Sonnet 5.5 (default) | `claude-sonnet-5-5` | $2 / $10 | about $0.02–0.03 |
+| Claude Opus 5.5 (higher quality) | `claude-opus-5-5` | $4 / $20 | about $0.04–0.06 |
+| Claude Opus 5 (higher quality) | `claude-opus-5` | $5 / $25 | about $0.05–0.07 |
+
+Prices are from the [Anthropic pricing page](https://platform.claude.com/docs/en/about-claude/pricing) (checked 2026-10-01). The cost per question was measured on Sonnet 5.5 for a summary and for a "suggest fixes" question on a 49-span sample; the Opus figures apply their prices to the same token counts. Follow-up questions in a long conversation cost more, because the earlier messages are sent again (prompt caching reduces this). Zhipu pricing is set by Zhipu; see open.bigmodel.cn.
 
 **What is sent to Anthropic:** only your question and the result rows that the assistant looks up (beam marks, bar notations, As values). The PDF and Excel files themselves are not sent. Check that this is allowed under your company's data policy.
 

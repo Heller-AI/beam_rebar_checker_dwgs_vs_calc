@@ -130,3 +130,36 @@ def test_on_request_runs_before_every_model_call_and_can_stop_the_loop():
     with pytest.raises(access.BudgetExceeded):
         agent.ask(client, [{"role": "user", "content": "x"}], RESULT, on_request=stop)
     assert client.requests == []  # nothing was sent
+
+
+def test_model_list_and_default():
+    assert agent.DEFAULT_MODEL == "claude-sonnet-5-5"
+    assert list(agent.MODELS) == ["claude-sonnet-5-5", "claude-opus-5-5", "claude-opus-5"]
+
+
+def _api_error(cls, status):
+    import httpx2
+    req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    return cls("boom", response=httpx2.Response(status, request=req), body=None)
+
+
+def test_unknown_model_gives_clear_message_not_a_crash():
+    import anthropic
+
+    def create(**kw):
+        raise _api_error(anthropic.NotFoundError, 404)
+
+    client = NS(beta=NS(messages=NS(create=create)))
+    try:
+        agent.ask(client, [{"role": "user", "content": "x"}], RESULT, model="claude-old-model")
+    except anthropic.APIError as e:
+        msg = agent.describe_anthropic_error(e, "claude-old-model")
+    assert "unknown or has been retired" in msg and "claude-old-model" in msg
+
+
+def test_other_error_messages():
+    import anthropic
+    assert "rejected" in agent.describe_anthropic_error(_api_error(anthropic.AuthenticationError, 401), "m")
+    assert "not allowed" in agent.describe_anthropic_error(_api_error(anthropic.PermissionDeniedError, 403), "m")
+    assert "rate limit" in agent.describe_anthropic_error(_api_error(anthropic.RateLimitError, 429), "m")
+    assert "(500)" in agent.describe_anthropic_error(_api_error(anthropic.InternalServerError, 500), "m")

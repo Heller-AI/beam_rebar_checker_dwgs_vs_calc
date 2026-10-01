@@ -132,17 +132,8 @@ def render_assistant(result, provider, api_key, model, key_mode, limits, secrets
             except agent.ProviderError as e:
                 answer = f"❌ {e}"
                 status.update(label="Error", state="error")
-            except anthropic.AuthenticationError:
-                answer = "❌ The API key was rejected. Check it in the sidebar."
-                status.update(label="Error", state="error")
-            except anthropic.RateLimitError:
-                answer = "⏳ Rate limit reached. Wait a minute and try again."
-                status.update(label="Error", state="error")
-            except anthropic.APIConnectionError:
-                answer = "🌐 Could not reach the Anthropic API. Check your internet connection."
-                status.update(label="Error", state="error")
-            except anthropic.APIStatusError as e:
-                answer = f"❌ API error ({e.status_code}): {e.message}"
+            except anthropic.APIError as e:
+                answer = f"❌ {agent.describe_anthropic_error(e, model)}"
                 status.update(label="Error", state="error")
         answer = access.redact(answer, secrets)
         tool_log = [access.redact(t, secrets) for t in tool_log]
@@ -289,7 +280,11 @@ with st.sidebar:
     env_model = get_setting(PROVIDERS[ai_provider]["model"], env)[0] or PROVIDERS[ai_provider]["default_model"]
     if ai_provider == "anthropic":
         model_ids = list(agent.MODELS) if env_model in agent.MODELS else [env_model, *agent.MODELS]
-        ai_model = st.selectbox("Model", model_ids, index=model_ids.index(env_model), format_func=lambda m: agent.MODELS.get(m, m))
+        ai_model = st.selectbox(
+            "Model", model_ids, index=model_ids.index(env_model),
+            format_func=lambda m: agent.MODELS.get(m, f"{m} (custom, from ANTHROPIC_MODEL)"),
+            help="Sonnet 5.5 is the lowest-cost option. The Opus models give higher-quality answers at a higher price.",
+        )
     else:
         ai_model = st.text_input("Model", value=env_model, help="Any GLM model name that supports function calling.")
     st.caption("The assistant only sees the comparison results table, not your PDF or Excel files.")

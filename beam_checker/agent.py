@@ -14,11 +14,13 @@ import requests
 from .checker import RESULT_COLUMNS
 from .parsers import normalize_str, parse_bar_notation, parse_stirrup_single_str
 
-DEFAULT_MODEL = "claude-opus-5-5"
+# Model IDs verified against the Models API. Prices per million input/output tokens
+# (platform.claude.com pricing page): Sonnet 5.5 $2/$10, Opus 5.5 $4/$20, Opus 5 $5/$25.
+DEFAULT_MODEL = "claude-sonnet-5-5"
 MODELS = {
-    "claude-opus-5-5": "Claude Opus 5.5 (best quality)",
-    "claude-opus-5": "Claude Opus 5",
-    "claude-sonnet-5-5": "Claude Sonnet 5.5 (about half the cost)",
+    "claude-sonnet-5-5": "Claude Sonnet 5.5 (default, lowest cost)",
+    "claude-opus-5-5": "Claude Opus 5.5 (higher quality, about 2x the cost)",
+    "claude-opus-5": "Claude Opus 5 (higher quality, about 2.5x the cost)",
 }
 MAX_TOOL_ROUNDS = 10
 DEFAULT_MAX_OUTPUT_TOKENS = 16000
@@ -327,9 +329,32 @@ def make_client(api_key):
     return anthropic.Anthropic(api_key=api_key)
 
 
+def describe_anthropic_error(exc, model):
+    """A short, user-facing message for an Anthropic SDK error (never includes the key)."""
+    if isinstance(exc, anthropic.NotFoundError):
+        return (f"The model '{model}' is unknown or has been retired. "
+                "Choose another model in the sidebar, or fix ANTHROPIC_MODEL in the settings.")
+    if isinstance(exc, anthropic.AuthenticationError):
+        return "The Anthropic API key was rejected. Check the key, or sign in again."
+    if isinstance(exc, anthropic.PermissionDeniedError):
+        return f"This API key is not allowed to use the model '{model}'. Choose another model."
+    if isinstance(exc, anthropic.RateLimitError):
+        return "Anthropic rate limit reached. Wait a minute and try again."
+    if isinstance(exc, anthropic.APITimeoutError):
+        return "The Anthropic API took too long to answer. Try again or ask a narrower question."
+    if isinstance(exc, anthropic.APIConnectionError):
+        return "Could not reach the Anthropic API. Check the internet connection."
+    if isinstance(exc, anthropic.BadRequestError):
+        return (f"The request was rejected for model '{model}'. If you set a custom model, it may not "
+                f"support the features this app uses; pick one from the list. Details: {exc.message}")
+    if isinstance(exc, anthropic.APIStatusError):
+        return f"Anthropic API error ({exc.status_code}): {exc.message}"
+    return f"Anthropic API error: {exc}"
+
+
 # ------------------------------------------------------------------ Zhipu (GLM)
 # OpenAI-compatible chat/completions endpoint with function calling, called with plain
-# `requests` (same approach as the PPVC drawing checker app). GLM's tool_choice only
+# `requests`, so no extra SDK is needed. GLM's tool_choice only
 # supports "auto", which is what this loop needs anyway.
 
 ZHIPU_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
