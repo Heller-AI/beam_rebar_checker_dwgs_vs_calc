@@ -104,7 +104,7 @@ Prices are from the [Anthropic pricing page](https://platform.claude.com/docs/en
 
 ## Drawing mode
 
-Choose **Schedule source → Drawing (PDF or image)** to take the provided steel from a beam schedule drawing instead of an Excel file. Excel mode is unchanged and needs no API key.
+Choose **Schedule source → Drawing (PDF or image)** to take the provided steel from a beam schedule drawing instead of an Excel file. Only the schedule source changes: the drawing is converted into a schedule table, and then the same flow as Excel mode runs (same Prokon upload, same **▶ Run comparison (all beams)** button, same results page, unmatched beams, downloads and AI Assistant). Excel mode needs no API key; drawing mode with the text layer doesn't either.
 
 Drawings can be older than the calculation. The purpose of drawing mode is to **surface discrepancies for a person to double-check**, not to certify the design.
 
@@ -113,11 +113,18 @@ Drawings can be older than the calculation. The purpose of drawing mode is to **
 1. **PDF text layer first (free, exact, nothing sent).** CAD-exported schedules usually keep every table cell as positioned text. The app finds the table from its header ("Mark", "Top Left", "Bottom Middle", "Stirrups Right"…) and reads each row from the word positions, exactly as written. No API key is needed and nothing leaves the server.
 2. **AI vision only if needed.** For scans and images without a text layer, or if you choose it, Claude reads the page images. The app first shows the **page count and an estimated cost** and asks you to tick **"I confirm I am allowed to send this drawing to Anthropic"**. Each page is sent as an overview plus overlapping close-up tiles. Claude transcribes the rows through a structured tool call and checks every bar and stirrup string with the app's own parser. Uses Anthropic only; with the shared key it counts against `MAX_DRAWING_CALLS_PER_SESSION` and `MAX_AI_CALLS_PER_DAY`.
 
+### Layout
+
+1. **Input files** (same box in both modes): Schedule source; the schedule on the left (Excel upload, sheet and format, or the drawing upload with its reading result such as "42 rows found, cost $0" and the reading method); the Prokon report on the right (one upload shared by both modes).
+2. **Review drawing schedule** (drawing mode only): coverage line, review table, crop viewer, **⬇ Download schedule as Excel (Type 2 layout)**, then **▶ Run comparison (all beams)**, enabled when every row is ticked.
+3. **Results** (identical in both modes): success line, metrics, then the tabs **Results** | **Findings to check** (drawing mode only) | **AI Assistant**. The Results tab ends with an always-visible **Unmatched beams** table ("Beam mark", "Where").
+
 ### Review, coverage and findings
 
 - **Review table:** every row must be ticked **Reviewed** before the comparison can run, whichever way it was read. Rows with medium/low confidence or a flag are highlighted in yellow. The page number and the reading method ("PDF text layer" or "AI vision") are shown, and you can open the **drawing crop of any row** while reviewing. Cells can be corrected and rows added or deleted.
 - **Coverage, shown prominently:** "found **X of Y** Prokon beam marks on the drawing", with the lists of Prokon beams missing from the drawing and drawing beams missing from Prokon.
-- **Results** are headed and labelled **"AI-read drawing vs Prokon"** (also in the CSV/Excel exports, with a "Read from" column).
+- **Download as Excel (converter):** the reviewed schedule as an `.xlsx` in the Type 2 layout (mark in B, top bars E-G, bottom bars H-J, stirrups L-N), with every cell copied verbatim (arrows, dashes and combined bars such as `2H13+2H13` are not changed). Page, reading method and flags are on a separate sheet that Excel mode does not read. Opening this file in Excel mode gives the same results as the drawing-mode comparison (tested).
+- **Results** carry one extra line, **"AI-read drawing vs Prokon · coverage: found X of Y"**, which also says whether AI was involved in reading (with the PDF text layer it was not). The CSV/Excel exports add "Schedule source" and "Read from" columns.
 - **Findings to check tab:** every span with a FAIL and every drawing beam that is not in Prokon, each shown **next to the cropped drawing region** (table header plus the row, with the page number), so a person can verify it in seconds.
 
 ### Limits and cost
@@ -127,7 +134,9 @@ Drawings can be older than the calculation. The purpose of drawing mode is to **
 - `MAX_DRAWING_PAGES` (default 10) pages per upload; `DRAWING_MAX_OUTPUT_TOKENS` (default 32000) per AI request.
 - `EXTRA_READING_RULES` (Streamlit secrets or `.env`, optional): private conventions added to the AI instructions at runtime, never shown in the app.
 
-**What is sent to Anthropic:** with text-layer reading, nothing. With AI vision, the drawing page images and their PDF text. The Prokon report and Excel files are never sent. The app stores nothing; readings live only in the browser session.
+**AI Assistant in drawing mode:** the same assistant, access code and limits as in Excel mode. It also gets a `get_schedule_source` tool: how each row was read (method, page), which rows were uncertain or flagged, coverage, and beams only on the drawing or only in Prokon. It sees the comparison results rows and this summary, never the drawing itself.
+
+**What is sent to Anthropic:** with text-layer reading, nothing from the drawing. With AI vision, the drawing page images and their PDF text. The Prokon report and Excel files are never sent. The app stores nothing; readings live only in the browser session.
 
 ### Known limitations
 

@@ -117,3 +117,39 @@ def test_coverage_counts_prokon_marks_found_on_the_drawing():
     cov = dr.coverage(table, ["B101", "B102a", "B103"])
     assert cov["found"] == ["B101", "B102a"] and cov["missing"] == ["B103"] and cov["total"] == 3
     assert cov["drawing_only"] == ["B999"]
+
+
+def test_type2_excel_export_is_verbatim_and_reads_back_identically(tmp_path):
+    import io
+    from unittest import mock
+
+    from beam_checker import checker
+
+    table = dr.read_text_layer([_page_with_tables()]).table
+    table.loc[table["Beam mark"] == "B101-1", "T3"] = "→"          # symbols must survive unchanged
+    data = dr.table_to_type2_excel(table)
+    sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, header=None, dtype=str)
+    assert list(sheets) == [dr.SCHEDULE_SHEET, dr.SOURCE_SHEET]
+    sched = sheets[dr.SCHEDULE_SHEET]
+    c = checker.EXCEL_FORMATS["Format 2"]
+    row = sched[sched[c["mark"]] == "B101-1"].iloc[0]
+    assert row[c["t3"]] == "→" and row[c["b2"]] == "2H16+2H13" and row[c["st_m"]] == "2H10-200"
+    assert sched[sched[c["mark"]] == "B102a"].iloc[0][c["t1"]] == "-"
+    assert "Page" not in " ".join(str(v) for v in sched.iloc[0].tolist())  # position info is on the other sheet
+
+    req = {"req_t1": 500.0, "req_b2": 300.0, "req_t3": 450.0, "req_asv_l": 0.5, "req_asv_m": 0.3, "req_asv_r": 0.5}
+    beams = {"B101": {1: req, 2: req}, "B102a": {1: req}, "B103": {1: req}}
+    with mock.patch.object(checker, "extract_all_beams_from_pdf", return_value=beams):
+        via_records = checker.run_comparison_records(dr.table_to_records(table), "unused.pdf")
+        via_excel = checker.run_comparison(io.BytesIO(data), "unused.pdf", dr.SCHEDULE_SHEET, "Format 2")
+    assert via_records.rows == via_excel.rows
+    assert via_records.excel_only == via_excel.excel_only and via_records.pdf_only == via_excel.pdf_only == ["B103"]
+
+
+def test_schedule_summary_for_the_assistant():
+    table = dr.read_text_layer([_page_with_tables()]).table
+    table.loc[table["Beam mark"] == "B102a", "Confidence"] = "low"
+    s = dr.schedule_summary(table, dr.READ_TEXT, ["B103"], ["B999"], 3, 2)
+    assert s["ai_used_for_reading"] is False and s["coverage"] == "found 2 of 3 Prokon beam marks on the drawing"
+    assert [r["mark"] for r in s["rows_needing_extra_care"]] == ["B102a"]
+    assert s["prokon_beams_not_on_drawing"] == ["B103"] and len(s["rows"]) == 3

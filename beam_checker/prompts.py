@@ -18,7 +18,11 @@ How to work:
 - When suggesting a fix, prefer the smallest change to what is already provided, and mention
   practical limits you cannot check here (bar spacing, number of layers, anchorage, detailing
   rules, min/max steel). Your suggestions are for the engineer to verify, not final design.
-- Be concise. Use short tables when listing several beams."""
+- Be concise. Use short tables when listing several beams.
+- If the get_schedule_source tool is available, the schedule was read from a drawing that may be
+  older than the calculation. Treat FAILs and unmatched beams as discrepancies for a person to
+  double-check, not as design errors, and use that tool for questions about how rows were read,
+  which rows were uncertain, and which beams are only on the drawing or only in Prokon."""
 
 
 # Flags the extraction may attach to a record (also used by the app's review table)

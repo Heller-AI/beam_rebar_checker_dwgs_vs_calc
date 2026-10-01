@@ -233,7 +233,31 @@ def _suggest_stirrups(required_asv_sv, max_spacing_mm):
     return {"required_asv_sv": required_asv_sv, "options": out or "No arrangement within limits."}
 
 
-def execute_tool(name, args, result):
+SCHEDULE_TOOL = {
+    "name": "get_schedule_source",
+    "description": "How the provided-steel schedule was obtained from the drawing (PDF text layer or AI vision), "
+                   "coverage of Prokon beam marks, beams only on the drawing or only in Prokon, the page of each "
+                   "row, and the rows that were uncertain or flagged during review.",
+    "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+    "strict": True,
+}
+
+
+def tools_for(schedule):
+    """Claude tool list: the schedule-source tool is offered only when the schedule came from a drawing."""
+    return TOOLS + [SCHEDULE_TOOL] if schedule else TOOLS
+
+
+def zhipu_tools_for(schedule):
+    return [{"type": "function", "function": {"name": t["name"], "description": t["description"],
+                                              "parameters": t["input_schema"]}} for t in tools_for(schedule)]
+
+
+def execute_tool(name, args, result, schedule=None):
+    if name == "get_schedule_source":
+        if not schedule:
+            return {"error": "The schedule came from an Excel file; there is no drawing source information."}
+        return schedule
     if name == "get_summary":
         return _get_summary(result)
     if name == "list_rows":
@@ -255,10 +279,10 @@ class ProviderError(Exception):
     """A provider call failed; the message is safe to show to the user."""
 
 
-def _run_tool_json(name, args, result):
+def _run_tool_json(name, args, result, schedule=None):
     """Run a tool and return (json_text, is_error)."""
     try:
-        return json.dumps(execute_tool(name, args, result), ensure_ascii=False), False
+        return json.dumps(execute_tool(name, args, result, schedule), ensure_ascii=False), False
     except Exception as e:
         return f"Error: {e}", True
 
@@ -266,11 +290,12 @@ def _run_tool_json(name, args, result):
 # ------------------------------------------------------------------ Anthropic (Claude)
 
 def ask(client, messages, result, model=DEFAULT_MODEL, on_tool=None, on_request=None,
-        max_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
+        max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, schedule=None):
     """Claude tool loop. `messages` already ends with the user's question and is extended in
     place (assistant turns and tool results) so it can be kept for follow-up questions.
     `on_tool(name, args)` is called before each tool runs. `on_request()` is called before
-    each model request and may raise to stop the loop (used for call budgets).
+    each model request and may raise to stop the loop (used for call budgets). `schedule` is the
+    drawing-source summary offered through get_schedule_source (None for Excel schedules).
     """
     for _ in range(MAX_TOOL_ROUNDS):
         if on_request:
@@ -279,7 +304,7 @@ def ask(client, messages, result, model=DEFAULT_MODEL, on_tool=None, on_request=
             model=model,
             max_tokens=max_tokens,
             system=SYSTEM_PROMPT,
-            tools=TOOLS,
+            tools=tools_for(schedule),
             messages=messages,
             output_config={"effort": "medium"},
             cache_control={"type": "ephemeral"},
@@ -302,7 +327,7 @@ def ask(client, messages, result, model=DEFAULT_MODEL, on_tool=None, on_request=
         for tu in tool_uses:
             if on_tool:
                 on_tool(tu.name, tu.input)
-            content, is_error = _run_tool_json(tu.name, tu.input, result)
+            content, is_error = _run_tool_json(tu.name, tu.input, result, schedule)
             block = {"type": "tool_result", "tool_use_id": tu.id, "content": content}
             if is_error:
                 block["is_error"] = True
@@ -348,14 +373,8 @@ ZHIPU_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
 ZHIPU_TIMEOUT_S = 180
 DEFAULT_ZHIPU_MODEL = "glm-5.3-flash"
 
-ZHIPU_TOOLS = [
-    {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
-    for t in TOOLS
-]
-
-
 def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None, on_request=None,
-              max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, post=requests.post):
+              max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, post=requests.post, schedule=None):
     """GLM tool loop over OpenAI-style `messages` (no system message; it is added per request).
     Same contract as `ask`. `post` is injectable for tests.
     """
@@ -367,7 +386,7 @@ def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None
         body = {
             "model": model,
             "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
-            "tools": ZHIPU_TOOLS,
+            "tools": zhipu_tools_for(schedule),
             "tool_choice": "auto",
             "max_tokens": max_tokens,
         }
@@ -411,7 +430,7 @@ def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None
             else:
                 if on_tool:
                     on_tool(name, args)
-                content, _ = _run_tool_json(name, args, result)
+                content, _ = _run_tool_json(name, args, result, schedule)
             messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": content})
 
     return "Stopped after too many tool calls. Try a more specific question."

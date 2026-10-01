@@ -163,3 +163,27 @@ def test_other_error_messages():
     assert "not allowed" in agent.describe_anthropic_error(_api_error(anthropic.PermissionDeniedError, 403), "m")
     assert "rate limit" in agent.describe_anthropic_error(_api_error(anthropic.RateLimitError, 429), "m")
     assert "(500)" in agent.describe_anthropic_error(_api_error(anthropic.InternalServerError, 500), "m")
+
+
+def test_schedule_source_tool_only_in_drawing_mode():
+    assert "get_schedule_source" not in [t["name"] for t in agent.tools_for(None)]
+    assert "get_schedule_source" in [t["name"] for t in agent.tools_for({"x": 1})]
+    assert [t["function"]["name"] for t in agent.zhipu_tools_for({"x": 1})][-1] == "get_schedule_source"
+    schedule = {"reading_method": "PDF text layer", "drawing_beams_not_in_prokon": ["B999"]}
+    assert agent.execute_tool("get_schedule_source", {}, RESULT, schedule) == schedule
+    assert "error" in agent.execute_tool("get_schedule_source", {}, RESULT, None)
+
+
+def test_assistant_uses_schedule_tool_with_claude():
+    client = FakeClient([
+        NS(stop_reason="tool_use", content=[NS(type="tool_use", id="t1", name="get_schedule_source", input={})]),
+        NS(stop_reason="end_turn", content=[NS(type="text", text="B999 is only on the drawing.")]),
+    ])
+    sent_tools = []
+    real_create = client.beta.messages.create
+    client.beta.messages.create = lambda **kw: (sent_tools.append([t["name"] for t in kw["tools"]]), real_create(**kw))[1]
+    messages = [{"role": "user", "content": "Which beams are only on the drawing?"}]
+    answer = agent.ask(client, messages, RESULT, schedule={"drawing_beams_not_in_prokon": ["B999"]})
+    assert answer == "B999 is only on the drawing."
+    assert "get_schedule_source" in sent_tools[0]
+    assert "B999" in messages[2]["content"][0]["content"]

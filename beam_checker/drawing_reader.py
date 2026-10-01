@@ -731,6 +731,70 @@ def table_to_records(table):
     return records
 
 
+# ------------------------------------------------------------------ converter and assistant context
+
+SCHEDULE_SHEET = "BEAM SCHEDULE"
+SOURCE_SHEET = "Source (not read)"
+
+
+def table_to_type2_excel(table):
+    """The reviewed schedule as an Excel file in the Type 2 layout, cell text copied verbatim.
+
+    Sheet 1 (read by Excel mode): mark in column B, size C, top bars E-G (T1-T3), bottom bars H-J
+    (B1-B3), link type K, stirrups L-N (S1-S3), side bars O, remark P. One row per span.
+    Sheet 2: page, reading method, confidence, flags and review tick per row (not read by Excel mode).
+    """
+    from .checker import EXCEL_FORMATS
+
+    c = EXCEL_FORMATS["Format 2"]
+    cols = {"Beam mark": c["mark"], "Size": 2, "T1": c["t1"], "T2": c["t2"], "T3": c["t3"], "B1": c["b1"],
+            "B2": c["b2"], "B3": 9, "Link type": 10, "S1": c["st_l"], "S2": c["st_m"], "S3": c["st_r"],
+            "Side bars": 14, "Remark": 15}
+    width = 16
+    header = [None] * width
+    for name, idx in cols.items():
+        header[idx] = "MARK" if name == "Beam mark" else name.upper()
+    rows = [header]
+    for _, r in table.iterrows():
+        if not _cell(r["Beam mark"]):
+            continue
+        row = [None] * width
+        for name, idx in cols.items():
+            v = r[name]
+            row[idx] = None if v is None or (isinstance(v, float) and math.isnan(v)) or v == "" else str(v)
+        rows.append(row)
+
+    source_cols = ["Beam mark", "Page", "Read from", "Confidence", "Flags", "Source note", "Reviewed"]
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        pd.DataFrame(rows).to_excel(writer, sheet_name=SCHEDULE_SHEET, header=False, index=False)
+        table[[c for c in source_cols if c in table.columns]].to_excel(writer, sheet_name=SOURCE_SHEET, index=False)
+    return buf.getvalue()
+
+
+def schedule_summary(table, method, pdf_only, excel_only, n_prokon, n_found, notes=None):
+    """What the AI assistant may know about a drawing schedule (no drawing content, only row metadata)."""
+    rows = []
+    for _, r in table.iterrows():
+        mark = _cell(r["Beam mark"])
+        if mark:
+            rows.append({"mark": mark, "page": _cell(r["Page"]), "read_from": _cell(r["Read from"]),
+                         "confidence": _cell(r["Confidence"]), "flags": _cell(r["Flags"]),
+                         "needed_extra_care": needs_review(_cell(r["Confidence"]), _cell(r["Flags"]))})
+    return {
+        "schedule_source": "drawing",
+        "reading_method": method,
+        "ai_used_for_reading": method != READ_TEXT,
+        "note": "The drawing may be older than the calculation; differences are discrepancies to double-check.",
+        "coverage": f"found {n_found} of {n_prokon} Prokon beam marks on the drawing",
+        "prokon_beams_not_on_drawing": list(pdf_only),
+        "drawing_beams_not_in_prokon": list(excel_only),
+        "rows_needing_extra_care": [r for r in rows if r["needed_extra_care"]],
+        "rows": [{k: r[k] for k in ("mark", "page", "read_from")} for r in rows],
+        "reader_notes": notes or {},
+    }
+
+
 def files_fingerprint(files, model, extra_rules=""):
     """Cache key for an extraction: file contents + model + private rules."""
     h = hashlib.sha256()
