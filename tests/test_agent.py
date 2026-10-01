@@ -109,3 +109,24 @@ def test_zhipu_bad_key_raises_friendly_error():
     import pytest
     with pytest.raises(agent.ProviderError, match="rejected"):
         agent.ask_zhipu("bad", [{"role": "user", "content": "x"}], RESULT, post=lambda *a, **k: FakeResp({}, 401))
+
+
+def test_on_request_runs_before_every_model_call_and_can_stop_the_loop():
+    client = FakeClient([
+        NS(stop_reason="tool_use", content=[NS(type="tool_use", id="t1", name="get_summary", input={})]),
+        NS(stop_reason="end_turn", content=[NS(type="text", text="done")]),
+    ])
+    calls = []
+    agent.ask(client, [{"role": "user", "content": "x"}], RESULT, on_request=lambda: calls.append(1))
+    assert len(calls) == 2
+
+    import pytest
+    from beam_checker import access
+
+    def stop():
+        raise access.BudgetExceeded("limit")
+
+    client = FakeClient([])
+    with pytest.raises(access.BudgetExceeded):
+        agent.ask(client, [{"role": "user", "content": "x"}], RESULT, on_request=stop)
+    assert client.requests == []  # nothing was sent

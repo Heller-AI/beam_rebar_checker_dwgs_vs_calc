@@ -21,6 +21,7 @@ MODELS = {
     "claude-sonnet-5-5": "Claude Sonnet 5.5 (about half the cost)",
 }
 MAX_TOOL_ROUNDS = 10
+DEFAULT_MAX_OUTPUT_TOKENS = 16000
 
 BAR_DIAS = [10, 13, 16, 20, 25, 32, 40]
 LINK_DIAS = [8, 10, 12, 13, 16]
@@ -64,7 +65,7 @@ TOOLS = [
     },
     {
         "name": "get_beam_detail",
-        "description": "All result rows for one beam. Accepts a span mark ('EDB16-2') or a base mark ('EDB16', returns every span). Matching ignores case, spaces and dashes.",
+        "description": "All result rows for one beam. Accepts a span mark ('B101-2') or a base mark ('B101', returns every span). Matching ignores case, spaces and dashes.",
         "input_schema": {
             "type": "object",
             "properties": {"beam_mark": {"type": "string"}},
@@ -168,7 +169,7 @@ def _get_beam_detail(result, beam_mark):
     key = normalize_str(beam_mark)
     exact = [r for r in result.rows if normalize_str(r[0]) == key]
     if not exact:
-        # Base mark: 'EDB16' matches 'EDB16-1', 'EDB16-2', ...
+        # Base mark: 'B101' matches 'B101-1', 'B101-2', ...
         exact = [r for r in result.rows if normalize_str(r[0]).startswith(key) and normalize_str(r[0])[len(key):].isdigit()]
     if not exact:
         return {"error": f"No results for beam '{beam_mark}'. Use get_summary to see available marks."}
@@ -275,15 +276,19 @@ def _run_tool_json(name, args, result):
 
 # ------------------------------------------------------------------ Anthropic (Claude)
 
-def ask(client, messages, result, model=DEFAULT_MODEL, on_tool=None):
+def ask(client, messages, result, model=DEFAULT_MODEL, on_tool=None, on_request=None,
+        max_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
     """Claude tool loop. `messages` already ends with the user's question and is extended in
     place (assistant turns and tool results) so it can be kept for follow-up questions.
-    `on_tool(name, args)` is called before each tool runs.
+    `on_tool(name, args)` is called before each tool runs. `on_request()` is called before
+    each model request and may raise to stop the loop (used for call budgets).
     """
     for _ in range(MAX_TOOL_ROUNDS):
+        if on_request:
+            on_request()
         response = client.beta.messages.create(
             model=model,
-            max_tokens=16000,
+            max_tokens=max_tokens,
             system=SYSTEM_PROMPT,
             tools=TOOLS,
             messages=messages,
@@ -337,19 +342,22 @@ ZHIPU_TOOLS = [
 ]
 
 
-def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None, post=requests.post):
+def ask_zhipu(api_key, messages, result, model=DEFAULT_ZHIPU_MODEL, on_tool=None, on_request=None,
+              max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, post=requests.post):
     """GLM tool loop over OpenAI-style `messages` (no system message; it is added per request).
     Same contract as `ask`. `post` is injectable for tests.
     """
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     for _ in range(MAX_TOOL_ROUNDS):
+        if on_request:
+            on_request()
         body = {
             "model": model,
             "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages],
             "tools": ZHIPU_TOOLS,
             "tool_choice": "auto",
-            "max_tokens": 16000,
+            "max_tokens": max_tokens,
         }
         try:
             resp = post(ZHIPU_ENDPOINT, headers=headers, json=body, timeout=ZHIPU_TIMEOUT_S)

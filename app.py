@@ -3,8 +3,8 @@
 Run locally:  streamlit run app.py
 """
 
-import hmac
 import io
+import math
 from pathlib import Path
 
 import anthropic
@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from beam_checker import EXCEL_FORMATS, run_comparison
-from beam_checker import agent
+from beam_checker import access, agent
 
 st.set_page_config(page_title="Beam Rebar Checker", page_icon="🏗️", layout="wide")
 
@@ -66,7 +66,7 @@ PROVIDERS = {
 }
 
 
-def render_assistant(result, provider, api_key, model):
+def render_assistant(result, provider, api_key, model, key_mode, limits, secrets):
     st.caption(
         "Ask questions about the results. Numbers come from the checker's own formulas via tools; "
         "suggestions still need an engineer's review."
@@ -111,15 +111,24 @@ def render_assistant(result, provider, api_key, model):
                 line = f"{name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"
                 tool_log.append(line)
                 status.update(label=f"Running {name}...")
-                status.write(line)
+                status.write(access.redact(line, secrets))
+
+            def on_request():
+                # Only the owner's shared key is capped; your own key or the owner's local .env key is not
+                if key_mode == "shared":
+                    access.consume_call(st.session_state, "chat", limits["session"], daily_counter(), limits["daily"])
 
             api_messages.append({"role": "user", "content": question})
+            kwargs = dict(model=model, on_tool=on_tool, on_request=on_request, max_tokens=limits["max_tokens"])
             try:
                 if provider == "zhipu":
-                    answer = agent.ask_zhipu(api_key, api_messages, result, model=model, on_tool=on_tool)
+                    answer = agent.ask_zhipu(api_key, api_messages, result, **kwargs)
                 else:
-                    answer = agent.ask(agent.make_client(api_key), api_messages, result, model=model, on_tool=on_tool)
+                    answer = agent.ask(agent.make_client(api_key), api_messages, result, **kwargs)
                 status.update(label=f"Done ({len(tool_log)} tool call(s))", state="complete")
+            except access.BudgetExceeded as e:
+                answer = f"🛑 {e}"
+                status.update(label="Limit reached", state="error")
             except agent.ProviderError as e:
                 answer = f"❌ {e}"
                 status.update(label="Error", state="error")
@@ -135,6 +144,8 @@ def render_assistant(result, provider, api_key, model):
             except anthropic.APIStatusError as e:
                 answer = f"❌ API error ({e.status_code}): {e.message}"
                 status.update(label="Error", state="error")
+        answer = access.redact(answer, secrets)
+        tool_log = [access.redact(t, secrets) for t in tool_log]
         st.markdown(answer)
 
     history.append({"role": "assistant", "text": answer, "tools": tool_log})
@@ -152,45 +163,102 @@ def read_env_file(path=Path(__file__).parent / ".env"):
     return values
 
 
+PLACEHOLDERS = ("your-key-here", "choose-a-long-random-code")
+
+
+def is_placeholder(value):
+    """Example values from .env.example / secrets.toml.example must never act as real keys or codes."""
+    return any(p in value for p in PLACEHOLDERS)
+
+
 def get_setting(name, env):
     """Streamlit secrets (cloud) first, then the local .env file."""
     try:
-        if name in st.secrets:
+        if name in st.secrets and not is_placeholder(str(st.secrets[name])):
             return str(st.secrets[name]), "secrets"
     except Exception:  # no secrets.toml
         pass
     value = env.get(name, "")
-    if value and "your-key" not in value:  # ignore the placeholder
+    if value and not is_placeholder(value):
         return value, ".env"
     return "", None
 
 
+def int_setting(name, env, default):
+    raw = get_setting(name, env)[0]
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+@st.cache_resource
+def daily_counter():
+    """One counter for the whole server process (all sessions). Resets when the app restarts."""
+    return access.DailyCounter()
+
+
+def render_sign_in(password):
+    wait = access.lock_remaining_seconds(st.session_state)
+    if wait:
+        st.error(f"Too many wrong codes. Try again in {math.ceil(wait / 60)} min.")
+        return
+    with st.form("access_form", clear_on_submit=True, border=False):
+        code = st.text_input("Access code", type="password", help="Ask the app owner for the code.")
+        submitted = st.form_submit_button("Sign in", type="primary")
+    if not submitted:
+        return
+    outcome = access.check_access_code(st.session_state, code, password)
+    if outcome in ("ok", "locked"):
+        st.rerun()
+    elif outcome == "wrong":
+        st.error(f"Wrong access code. {access.attempts_left(st.session_state)} attempt(s) left.")
+    else:
+        st.warning("Enter the access code.")
+
+
 def resolve_api_key(provider, env):
-    """Decide which key the assistant uses. The owner's key is only shared locally or with the access code."""
+    """Return (api_key, mode). mode: "shared" (owner key via access code, capped),
+    "owner" (owner key from the local .env without a code), "own" (user's key) or None.
+    """
     cfg = PROVIDERS[provider]
     owner_key, key_source = get_setting(cfg["key"], env)
     password, _ = get_setting("APP_PASSWORD", env)
+    code_mode = bool(password) and any(get_setting(p["key"], env)[0] for p in PROVIDERS.values())
+    shared_key = ""
 
-    if owner_key and password:
-        code = st.text_input("Access code", type="password", help="Ask the app owner for the code to use their API key.")
-        if code and hmac.compare_digest(code, password):
-            st.success("Access code accepted. Using the owner's API key.")
-            return owner_key
-        if code:
-            st.error("Wrong access code.")
+    if code_mode:
+        if access.is_signed_in(st.session_state, password):
+            if owner_key:
+                st.success("Signed in with the access code.")
+                shared_key = owner_key
+            else:
+                st.info(f"Signed in, but no shared {cfg['label']} key is set up. Switch provider or use your own key.")
+            if st.button("Sign out"):
+                access.sign_out(st.session_state)
+                st.rerun()
+        else:
+            render_sign_in(password)
     elif owner_key and key_source == ".env":
         st.success("Using the API key from your local .env file.")
-        return owner_key
+        return owner_key, "owner"
     elif owner_key:
         st.warning("A shared API key is configured but APP_PASSWORD is not set, so it is not used.")
 
-    st.caption("No access code? Use your own key:")
-    return st.text_input(
-        f"Your {cfg['label']} API key",
-        type="password",
-        key=f"own_key_{provider}",
-        help=f"Get one at {cfg['console']}. It is kept only in your browser session and is not stored.",
-    )
+    own_label = f"Your {cfg['label']} API key"
+    own_help = f"Get one at {cfg['console']}. It is kept only in your browser session and is not stored."
+    if code_mode:
+        with st.expander("Use my own API key instead"):
+            own_key = st.text_input(own_label, type="password", key=f"own_key_{provider}", help=own_help)
+    else:
+        own_key = st.text_input(own_label, type="password", key=f"own_key_{provider}", help=own_help)
+
+    if own_key:
+        return own_key, "own"
+    if shared_key:
+        return shared_key, "shared"
+    return "", None
 
 
 with st.sidebar:
@@ -205,7 +273,18 @@ with st.sidebar:
         format_func=lambda p: PROVIDERS[p]["label"],
         horizontal=True,
     )
-    api_key = resolve_api_key(ai_provider, env)
+    api_key, key_mode = resolve_api_key(ai_provider, env)
+    limits = {
+        "session": int_setting("MAX_AI_CALLS_PER_SESSION", env, 30),
+        "daily": int_setting("MAX_AI_CALLS_PER_DAY", env, 300),
+        "max_tokens": int_setting("MAX_OUTPUT_TOKENS", env, 4000),
+    }
+    calls_left_slot = st.empty()  # filled at the end of the script, after any AI calls this run
+    secrets_to_hide = [
+        *(get_setting(p["key"], env)[0] for p in PROVIDERS.values()),
+        get_setting("APP_PASSWORD", env)[0],
+        api_key,
+    ]
 
     env_model = get_setting(PROVIDERS[ai_provider]["model"], env)[0] or PROVIDERS[ai_provider]["default_model"]
     if ai_provider == "anthropic":
@@ -290,7 +369,7 @@ if result is not None:
         st.subheader("2. Comparison results (3 position rows per span)")
 
         f1, f2 = st.columns([3, 1])
-        search = f1.text_input("Search beam mark", placeholder="e.g. EDB16")
+        search = f1.text_input("Search beam mark", placeholder="e.g. B101")
         status = f2.selectbox("Status", ["All", "FAIL Only", "OK Only"])
 
         df_view = df_all
@@ -328,6 +407,10 @@ if result is not None:
         u2.dataframe(pd.DataFrame({"Beam": result.excel_only}), hide_index=True, width="stretch")
 
     with tab_ai:
-        render_assistant(result, ai_provider, api_key, ai_model)
+        render_assistant(result, ai_provider, api_key, ai_model, key_mode, limits, secrets_to_hide)
 else:
     st.info("Upload both files and click **Run comparison** to start.")
+
+if key_mode == "shared":
+    left = limits["session"] - access.session_calls_used(st.session_state, "chat")
+    calls_left_slot.caption(f"AI calls left this session: {max(0, left)} of {limits['session']}")

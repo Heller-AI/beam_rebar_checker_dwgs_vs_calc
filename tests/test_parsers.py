@@ -45,9 +45,9 @@ def test_stirrup_list_sums():
 
 def test_beam_mark_helpers():
     assert clean_suffix("12TRB10-2") == ("12TRB10", 2)
-    assert clean_suffix("EDB16") == ("EDB16", 1)
-    assert normalize_str("EDB 16-a") == "edb16a"
-    assert is_valid_beam_mark("EDB16")
+    assert clean_suffix("B101") == ("B101", 1)
+    assert normalize_str("B 101-a") == "b101a"
+    assert is_valid_beam_mark("B101")
     assert not is_valid_beam_mark("123")
     assert not is_valid_beam_mark("B1")
     assert is_arrow_symbol(" → ")

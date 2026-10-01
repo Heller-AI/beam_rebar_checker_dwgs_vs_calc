@@ -22,7 +22,7 @@ Any position where provided < required is flagged **FAIL**.
 - Filter by beam mark or status. FAIL rows are highlighted.
 - Download the filtered results as CSV or Excel.
 - Lists beams that are in the PDF but not the schedule, and the other way round.
-- **AI Assistant** tab (optional, uses Claude): ask questions about the results, e.g. *"Why does EDB31-2 fail?"* or *"Suggest the smallest bar change to fix each FAIL"*. See [AI Assistant](#ai-assistant).
+- **AI Assistant** tab (optional, uses Claude): ask questions about the results, e.g. *"Why does B101-2 fail?"* or *"Suggest the smallest bar change to fix each FAIL"*. See [AI Assistant](#ai-assistant).
 
 ## Quick start (local)
 
@@ -55,18 +55,37 @@ The assistant is an AI agent with tools. It can run on **Anthropic (Claude)** or
 
 **It needs an API key, which is paid per use.** You can use an Anthropic key (console.anthropic.com), a Zhipu key (open.bigmodel.cn), or both. These are separate from any chat subscription.
 
-`.env` settings (see `.env.example`): `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ZHIPU_API_KEY`, `ZHIPU_MODEL`, `ACTIVE_PROVIDER` (`anthropic` or `zhipu`, the sidebar default) and `APP_PASSWORD`. The same names work in Streamlit Cloud secrets. One `APP_PASSWORD` protects both keys.
+### Access for colleagues: access code, no API key needed
 
+On the online app, the owner stores their API keys in Streamlit secrets and gives colleagues an **access code**. Colleagues type only the code. They never see or need a key.
 
-1. Create a key at <https://console.anthropic.com> → *API Keys*, and add credit under *Billing*.
-2. **On your own PC:** copy `.env.example` to `.env` (git-ignored) and paste the key after `ANTHROPIC_API_KEY=`. Refresh the app. If colleagues open your app over the office network, also set `APP_PASSWORD=` so they need a code.
-3. **On Streamlit Cloud:** `.env` is not uploaded, so by default users must enter **their own** key. To share yours with selected people, paste both `ANTHROPIC_API_KEY` and `APP_PASSWORD` into *App settings → Secrets* (see `.streamlit/secrets.toml.example`) and give the code only to people you approve. **Without `APP_PASSWORD`, a key in secrets is never used.** Also set a monthly spend limit in the Anthropic console.
+1. Create a key at <https://console.anthropic.com> → *API Keys* (and/or a Zhipu key), add credit, and **set a monthly spend limit**.
+2. On Streamlit Cloud, open *App settings → Secrets* and paste the settings from `.streamlit/secrets.toml.example` with your real values. One `APP_PASSWORD` unlocks both providers' keys.
+3. Share the code only with people you approve. Change `APP_PASSWORD` to revoke access; everyone signed in with the old code is signed out.
 
-| Where the key is | APP_PASSWORD set? | Who can use your key |
+How it behaves:
+
+- The sidebar shows only an **Access code** field. "Use my own API key instead" sits in a collapsed section for people who have their own key, which is never capped.
+- An accepted code is remembered for the browser session (until the tab is closed or they sign out).
+- **5 wrong codes lock the field for 10 minutes** in that session.
+- **Cost limits on the shared key:** each model request counts as one AI call (one question can take several, because the assistant looks things up with tools; a detailed question used about 5 in testing).
+  - `MAX_AI_CALLS_PER_SESSION` (default 30) per browser session.
+  - `MAX_AI_CALLS_PER_DAY` (default 300) for the whole app, shared by all users. It is kept in memory, so it **resets when the app restarts** (reboot, redeploy, or Streamlit Cloud putting the app to sleep).
+  - `MAX_OUTPUT_TOKENS` (default 4000) caps each response.
+- Keys and the code are never shown in the app, in error messages or in the tool-call log.
+
+These limits make casual misuse expensive, not impossible: a new browser session starts a fresh session cap. The daily cap and the spend limit in the provider console are the real ceiling, so set both.
+
+| Where the key is | `APP_PASSWORD` set? | Who can use your key |
 |---|---|---|
-| `.env` (your PC) | No | Anyone opening the app from your PC or office network |
-| `.env` or Cloud secrets | Yes | Only people who type the access code |
-| Cloud secrets | No | Nobody (key ignored, users must bring their own) |
+| Streamlit Cloud secrets | Yes | Only people who type the access code, within the limits above |
+| Streamlit Cloud secrets | No | Nobody: the key is ignored and users must bring their own |
+| `.env` on your PC | Yes | Only people who type the access code |
+| `.env` on your PC | No | Anyone who opens the app from your PC or over the office network, with no limits. Fine for running it only on your own PC |
+
+**On your own PC:** copy `.env.example` to `.env` (git-ignored) and fill in your keys. `.env` is never uploaded, so it has no effect on the online app.
+
+All settings (same names in `.env` and in Streamlit secrets): `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ZHIPU_API_KEY`, `ZHIPU_MODEL`, `ACTIVE_PROVIDER` (`anthropic` or `zhipu`, the sidebar default), `APP_PASSWORD`, `MAX_AI_CALLS_PER_SESSION`, `MAX_AI_CALLS_PER_DAY`, `MAX_OUTPUT_TOKENS`.
 
 Cost is roughly a few US cents per question with Claude Opus 5.5, and about half that with Sonnet 5.5 (you can pick the model in the sidebar). Longer conversations cost more per question because the history is resent.
 
@@ -81,7 +100,8 @@ Cost is roughly a few US cents per question with Claude Opus 5.5, and about half
 │   ├── parsers.py            # Bar / stirrup notation & beam-mark helpers
 │   ├── prokon_pdf.py         # Extract required As / Asv from Prokon PDF
 │   ├── checker.py            # Read schedule, match beams, produce results
-│   └── agent.py              # AI assistant: Claude / GLM + tools over the results
+│   ├── agent.py              # AI assistant: Claude / GLM + tools over the results
+│   └── access.py             # Access code, lockout and AI call limits
 ├── tests/                    # pytest unit + regression tests
 ├── sample_data/              # Put local test files here (git-ignored)
 ├── legacy/                   # Original Tkinter desktop version (reference only)

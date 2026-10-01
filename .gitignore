@@ -30,3 +30,7 @@ legacy/*.exe
 Thumbs.db
 .vscode/
 .idea/
+
+# Local working notes and Claude Code settings
+prompt/
+.claude/
