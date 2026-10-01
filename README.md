@@ -1,6 +1,6 @@
 # Beam Rebar Checker (Prokon vs Beam Schedule)
 
-A web app that checks the reinforcement in an **Excel beam schedule** against the **required steel from a Prokon continuous-beam PDF report**.
+A web app that checks the reinforcement in a **beam schedule** against the **required steel from a Prokon continuous-beam PDF report**. The schedule can be an **Excel file** or a **schedule drawing** (PDF or PNG/JPG), read from the PDF text layer when possible or by Claude vision otherwise, and reviewed by you before the check runs.
 
 For every beam span it reports 3 position rows (left support, mid-span, right support). For each row it compares:
 
@@ -14,6 +14,7 @@ Any position where provided < required is flagged **FAIL**.
 ## Features
 
 - Upload the Excel schedule and Prokon PDF in the browser. Nothing to install for end users.
+- **Drawing mode**: upload the beam schedule drawing instead of an Excel file. Read from the PDF text layer when possible (free), otherwise with Claude vision; every row is reviewed, and each finding is shown next to a crop of the drawing. See [Drawing mode](#drawing-mode).
 - Picks the sheet automatically (the first one named *BEAM* or *SCHEDULE*).
 - Two schedule layouts:
   - **Type 1**: mark in col A, top bars C–E, bottom F–G, stirrups K, L, M
@@ -85,7 +86,7 @@ These limits make casual misuse expensive, not impossible: a new browser session
 
 **On your own PC:** copy `.env.example` to `.env` (git-ignored) and fill in your keys. `.env` is never uploaded, so it has no effect on the online app.
 
-All settings (same names in `.env` and in Streamlit secrets): `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ZHIPU_API_KEY`, `ZHIPU_MODEL`, `ACTIVE_PROVIDER` (`anthropic` or `zhipu`, the sidebar default), `APP_PASSWORD`, `MAX_AI_CALLS_PER_SESSION`, `MAX_AI_CALLS_PER_DAY`, `MAX_OUTPUT_TOKENS`.
+All settings (same names in `.env` and in Streamlit secrets): `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `ZHIPU_API_KEY`, `ZHIPU_MODEL`, `ACTIVE_PROVIDER` (`anthropic` or `zhipu`, the sidebar default), `APP_PASSWORD`, `MAX_AI_CALLS_PER_SESSION`, `MAX_AI_CALLS_PER_DAY`, `MAX_OUTPUT_TOKENS`, and for drawing mode `MAX_DRAWING_PAGES`, `MAX_DRAWING_CALLS_PER_SESSION`, `DRAWING_MAX_OUTPUT_TOKENS`, `EXTRA_READING_RULES`.
 
 ### Models and cost
 
@@ -99,7 +100,41 @@ Pick the Anthropic model in the sidebar. `ANTHROPIC_MODEL` sets the starting cho
 
 Prices are from the [Anthropic pricing page](https://platform.claude.com/docs/en/about-claude/pricing) (checked 2026-10-01). The cost per question was measured on Sonnet 5.5 for a summary and for a "suggest fixes" question on a 49-span sample; the Opus figures apply their prices to the same token counts. Follow-up questions in a long conversation cost more, because the earlier messages are sent again (prompt caching reduces this). Zhipu pricing is set by Zhipu; see open.bigmodel.cn.
 
-**What is sent to Anthropic:** only your question and the result rows that the assistant looks up (beam marks, bar notations, As values). The PDF and Excel files themselves are not sent. Check that this is allowed under your company's data policy.
+**What the assistant sends to the AI provider:** only your question and the result rows that the assistant looks up (beam marks, bar notations, As values). The PDF and Excel files themselves are not sent. Drawing mode with AI vision is different: it sends the drawing pages (see [Drawing mode](#drawing-mode)). Check that this is allowed under your company's data policy.
+
+## Drawing mode
+
+Choose **Schedule source → Drawing (PDF or image)** to take the provided steel from a beam schedule drawing instead of an Excel file. Excel mode is unchanged and needs no API key.
+
+Drawings can be older than the calculation. The purpose of drawing mode is to **surface discrepancies for a person to double-check**, not to certify the design.
+
+### How the drawing is read
+
+1. **PDF text layer first (free, exact, nothing sent).** CAD-exported schedules usually keep every table cell as positioned text. The app finds the table from its header ("Mark", "Top Left", "Bottom Middle", "Stirrups Right"…) and reads each row from the word positions, exactly as written. No API key is needed and nothing leaves the server.
+2. **AI vision only if needed.** For scans and images without a text layer, or if you choose it, Claude reads the page images. The app first shows the **page count and an estimated cost** and asks you to tick **"I confirm I am allowed to send this drawing to Anthropic"**. Each page is sent as an overview plus overlapping close-up tiles. Claude transcribes the rows through a structured tool call and checks every bar and stirrup string with the app's own parser. Uses Anthropic only; with the shared key it counts against `MAX_DRAWING_CALLS_PER_SESSION` and `MAX_AI_CALLS_PER_DAY`.
+
+### Review, coverage and findings
+
+- **Review table:** every row must be ticked **Reviewed** before the comparison can run, whichever way it was read. Rows with medium/low confidence or a flag are highlighted in yellow. The page number and the reading method ("PDF text layer" or "AI vision") are shown, and you can open the **drawing crop of any row** while reviewing. Cells can be corrected and rows added or deleted.
+- **Coverage, shown prominently:** "found **X of Y** Prokon beam marks on the drawing", with the lists of Prokon beams missing from the drawing and drawing beams missing from Prokon.
+- **Results** are headed and labelled **"AI-read drawing vs Prokon"** (also in the CSV/Excel exports, with a "Read from" column).
+- **Findings to check tab:** every span with a FAIL and every drawing beam that is not in Prokon, each shown **next to the cropped drawing region** (table header plus the row, with the page number), so a person can verify it in seconds.
+
+### Limits and cost
+
+- Text-layer reading: free.
+- AI vision: about $0.20-0.40 for one A1 sheet with Sonnet 5.5, $0.40-0.70 with Opus 5.5 and $0.50-0.90 with Opus 5 (estimate shown before every run). Results are cached per file and model for the browser session.
+- `MAX_DRAWING_PAGES` (default 10) pages per upload; `DRAWING_MAX_OUTPUT_TOKENS` (default 32000) per AI request.
+- `EXTRA_READING_RULES` (Streamlit secrets or `.env`, optional): private conventions added to the AI instructions at runtime, never shown in the app.
+
+**What is sent to Anthropic:** with text-layer reading, nothing. With AI vision, the drawing page images and their PDF text. The Prokon report and Excel files are never sent. The app stores nothing; readings live only in the browser session.
+
+### Known limitations
+
+- The text-layer reader needs a "Mark" header and one table row per text line. Unusual layouts (rotated tables, merged multi-line cells) fall back to AI vision.
+- AI vision uses Anthropic only. Zhipu GLM would need a GLM vision model with function calling.
+- Link type codes (A1, Normal…) describe a stirrup shape, not the number of legs. When legs are not written the checker assumes 2.
+- Bottom bars B3 are shown but, as in Excel mode, not used by the checker. For a blank support end the existing checker rule still copies the other end's top bars and stirrups.
 
 ## Project structure
 
@@ -111,7 +146,10 @@ Prices are from the [Anthropic pricing page](https://platform.claude.com/docs/en
 │   ├── prokon_pdf.py         # Extract required As / Asv from Prokon PDF
 │   ├── checker.py            # Read schedule, match beams, produce results
 │   ├── agent.py              # AI assistant: Claude / GLM + tools over the results
-│   └── access.py             # Access code, lockout and AI call limits
+│   ├── access.py             # Access code, lockout and AI call limits
+│   ├── text_layer.py         # Drawing mode: read schedule tables from the PDF text layer (no AI)
+│   ├── drawing_reader.py     # Drawing mode: pages, AI vision reading, checks, review table, crops
+│   └── prompts.py            # All prompt text (assistant and extraction rules)
 ├── tests/                    # pytest unit + regression tests
 ├── sample_data/              # Put local test files here (git-ignored)
 ├── legacy/                   # Original Tkinter desktop version (reference only)
@@ -126,7 +164,7 @@ The core `beam_checker` package does not depend on Streamlit. You can use it fro
 ```python
 from beam_checker import run_comparison
 
-result = run_comparison("schedule.xlsx", "prokon.pdf", sheet_name="CIS_BEAM SCHEDULE", fmt="Format 2")
+result = run_comparison("schedule.xlsx", "prokon.pdf", sheet_name="BEAM SCHEDULE", fmt="Format 2")
 result.to_dataframe().to_excel("check.xlsx", index=False)
 print(result.pdf_only, result.excel_only)
 ```
@@ -138,7 +176,15 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-`tests/test_regression.py` runs an end-to-end check when a PDF and XLSX are present in `sample_data/`. Otherwise it is skipped.
+`tests/test_regression.py` runs an end-to-end check when a PDF and XLSX are present in `sample_data/`. Otherwise it is skipped. The drawing-mode tests use mocked model responses and make no API calls.
+
+**Optional AI vision accuracy test** (calls the API and costs money): put a schedule drawing in `sample_data/`, then run
+
+```bash
+RUN_EXTRACTION_ACCURACY=1 EXTRACTION_MODEL=claude-sonnet-5-5 pytest -s tests/test_extraction_accuracy.py
+```
+
+Ground truth is what is written on the drawing: a hand-transcribed CSV (`SAMPLE_TRUTH`) or, by default, the drawing's own text layer. The Excel schedule is **not** used as ground truth, because a drawing can be older than the calculation; if an Excel file is present, drawing-vs-Excel differences are reported separately as findings, with how many of them the AI read also shows. Change `EXTRACTION_MODEL` to compare models. Other settings are listed in the test file.
 
 ## Assumptions and limitations
 

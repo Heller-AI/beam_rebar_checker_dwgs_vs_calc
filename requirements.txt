@@ -4,3 +4,5 @@ openpyxl>=3.1
 pypdf>=4.0
 anthropic>=1.0
 requests>=2.31
+pypdfium2>=4.30
+pillow>=10.0

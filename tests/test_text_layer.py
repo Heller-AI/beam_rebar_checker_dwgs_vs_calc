@@ -1,0 +1,119 @@
+"""Text-layer table reading, review ticks, coverage and crops (synthetic data, no API)."""
+
+import pandas as pd
+from PIL import Image
+
+from beam_checker import drawing_reader as dr
+from beam_checker import text_layer as tl
+
+W = tl.Word
+H = 7  # text height in points
+
+
+def word(text, cx, y):
+    """A word centred on cx (CAD schedules centre text in its cell)."""
+    w = 6 * len(text)
+    return W(text, cx - w / 2, y, cx + w / 2, y + H)
+
+
+HEADER_Y = 500
+COLS = [("Mark", 80), ("Beam Size", 150), ("Top|Left", 300), ("Top|Middle", 385), ("Top|Right", 470),
+        ("Bottom|Left", 555), ("Bottom|Middle", 640), ("Bottom|Right", 725), ("Side Bar (EF)", 810),
+        ("Stirrups|Left", 905), ("Stirrups|Middle", 990), ("Stirrups|Right", 1075),
+        ("Stirrups Type|Left", 1180), ("Span Type", 1290)]
+ROWS = [
+    ["B101-1", "200x450", "3H16", "2H16", "3H16", "2H16", "2H16+2H13", "2H16", "H10-250", "2H10-150", "2H10-200", "2H10-150", "Normal", ""],
+    ["B101-2", "200x450", "3H16", "2H16", "3H20", "2H16", "2H16", "2H16", "H10-250", "2H10-150", "2H10-200", "2H10-150", "Normal", ""],
+    ["B102a", "200x225/175", "-", "2H13", "2H13", "-", "2H13", "2H13", "-", "-", "H10-125", "H10-125", "Normal", "CANT."],
+]
+
+
+def synthetic_page_words(extra=()):
+    words = []
+    for label, x in COLS:
+        parts = label.split("|")
+        for i, part in enumerate(parts):              # two-line headers: first part on the upper line
+            words.append(word(part, x, HEADER_Y + (len(parts) - 1 - i) * 11))
+    for r, row in enumerate(ROWS):
+        y = HEADER_Y - 30 - r * 28
+        for (label, x), val in zip(COLS, row):
+            if val:
+                words.append(word(val, x, y))
+    words.append(word("BEAM SCHEDULE", 600, HEADER_Y + 40))  # title above the header
+    words.append(word("GENERAL NOTES", 80, 100))              # text far below the table
+    return words + list(extra)
+
+
+def test_header_mapping():
+    f = tl._field_for_header
+    assert [f("Top Left"), f("Top Middle"), f("Top Right")] == ["T1", "T2", "T3"]
+    assert [f("Bottom Left"), f("Bottom Middle"), f("Bottom Right")] == ["B1", "B2", "B3"]
+    assert [f("Stirrups Left"), f("Stirrups Middle"), f("Stirrups Right")] == ["S1", "S2", "S3"]
+    assert f("Stirrups TypeLeft") == "link_type" and f("Type Mark") == "beam_mark"
+    assert f("Beam Size") == "size" and f("Side Bar (EF)") == "side_bars" and f("BeamSpan Type") == "remark"
+    assert f("T2") == "T2" and f("S3") == "S3" and f("Something else") is None
+
+
+def test_reads_every_row_and_cell_as_written():
+    tables = tl.find_tables(synthetic_page_words())
+    assert len(tables) == 1
+    recs = tables[0].records
+    assert [r["beam_mark"] for r in recs] == ["B101-1", "B101-2", "B102a"]
+    assert recs[0]["B2"] == "2H16+2H13" and recs[0]["S2"] == "2H10-200" and recs[0]["link_type"] == "Normal"
+    assert recs[2]["T1"] == "-" and recs[2]["size"] == "200x225/175" and recs[2]["remark"] == "CANT."
+    assert all(r["confidence"] == "high" and not r["flags"] for r in recs)
+    assert tables[0].notes == [] and tables[0].unmapped_headers == []
+
+
+def test_no_table_without_a_mark_header():
+    assert tl.find_tables([w for w in synthetic_page_words() if w.text != "Mark"]) == []
+
+
+def test_two_words_in_one_cell_are_flagged_not_guessed():
+    stray = word("X", 300 + 25, HEADER_Y - 30)          # extra word inside B101-1's T1 cell
+    rec = tl.find_tables(synthetic_page_words([stray]))[0].records[0]
+    assert rec["T1"] == "3H16 X" and rec["flags"] == ["unreadable"]
+
+
+def test_text_beside_the_table_is_ignored():
+    rec = tl.find_tables(synthetic_page_words([word("REV A", 1900, HEADER_Y - 30)]))[0].records[0]
+    assert "REV A" not in " ".join(str(v) for v in rec.values())
+
+
+def _page_with_tables():
+    tables = tl.find_tables(synthetic_page_words())
+    return dr.Page(1, "file 1, page 1", Image.new("L", (3000, 1500), 255), "", tables=tables, scale=2.0, height_pt=700)
+
+
+def test_text_layer_extraction_table_boxes_and_crops():
+    page = _page_with_tables()
+    ex = dr.read_text_layer([page])
+    assert ex.method == dr.READ_TEXT and ex.requests == 0
+    assert list(ex.table["Read from"].unique()) == [dr.READ_TEXT]
+    assert not ex.table["Reviewed"].any()                       # nothing is pre-ticked
+    assert set(ex.boxes) == set(ex.table["Row ID"])
+    b = ex.boxes[ex.table["Row ID"].iloc[0]]
+    x0, y0, x1, y1 = b["row"]
+    assert x0 < x1 and y0 < y1 and b["header"][3] <= y0 + 1      # header sits above its row (image y grows down)
+    crop = dr.crop_row(page, b["row"], b["header"], max_width=800)
+    assert crop.width <= 800
+    assert dr.text_layer_summary([page]) == {1: 3}
+    assert dr.read_text_layer([dr.Page(1, "x", Image.new("L", (10, 10)))]) is None
+
+
+def test_every_row_must_be_ticked():
+    table = dr.read_text_layer([_page_with_tables()]).table
+    assert not dr.all_reviewed(table)
+    table["Reviewed"] = True
+    assert dr.all_reviewed(table)
+    table["Reviewed"] = table["Reviewed"].astype(object)   # rows added in the editor can have an empty tick
+    table.loc[0, "Reviewed"] = None
+    assert not dr.all_reviewed(table)
+    assert not dr.all_reviewed(table.iloc[0:0])
+
+
+def test_coverage_counts_prokon_marks_found_on_the_drawing():
+    table = pd.DataFrame({"Beam mark": ["B101-1", "B101-2", "B102a", "B999", None]})
+    cov = dr.coverage(table, ["B101", "B102a", "B103"])
+    assert cov["found"] == ["B101", "B102a"] and cov["missing"] == ["B103"] and cov["total"] == 3
+    assert cov["drawing_only"] == ["B999"]

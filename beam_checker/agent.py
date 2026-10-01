@@ -13,6 +13,7 @@ import requests
 
 from .checker import RESULT_COLUMNS
 from .parsers import normalize_str, parse_bar_notation, parse_stirrup_single_str
+from .prompts import ASSISTANT_SYSTEM_PROMPT
 
 # Model IDs verified against the Models API. Prices per million input/output tokens
 # (platform.claude.com pricing page): Sonnet 5.5 $2/$10, Opus 5.5 $4/$20, Opus 5 $5/$25.
@@ -28,21 +29,7 @@ DEFAULT_MAX_OUTPUT_TOKENS = 16000
 BAR_DIAS = [10, 13, 16, 20, 25, 32, 40]
 LINK_DIAS = [8, 10, 12, 13, 16]
 
-SYSTEM_PROMPT = """You are a structural engineering assistant inside a beam reinforcement checker.
-The app has compared an Excel beam schedule (provided steel) against a Prokon continuous-beam
-report (required steel). Each beam span has 3 rows: Left Support (top steel), Mid-Span (bottom
-steel) and Right Support (top steel). Each row checks flexure (As, mm²) and shear (Asv/sv, mm²/mm).
-Bar notation is nHd (e.g. 3H20 = three 20 mm high-yield bars); stirrups are nHd-s
-(legs, diameter, spacing in mm).
-
-How to work:
-- Use the tools to look up results. Do not compute steel areas or Asv/sv in your head; use
-  evaluate_rebar, evaluate_stirrup, suggest_bars and suggest_stirrups so every number is traceable.
-- Quote beam marks, required vs provided values and ratios exactly as the tools return them.
-- When suggesting a fix, prefer the smallest change to what is already provided, and mention
-  practical limits you cannot check here (bar spacing, number of layers, anchorage, detailing
-  rules, min/max steel). Your suggestions are for the engineer to verify, not final design.
-- Be concise. Use short tables when listing several beams."""
+SYSTEM_PROMPT = ASSISTANT_SYSTEM_PROMPT
 
 TOOLS = [
     {
