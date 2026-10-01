@@ -1,6 +1,6 @@
 # Beam Rebar Checker (Prokon vs Beam Schedule)
 
-A web app that checks the reinforcement in a **beam schedule** against the **required steel from a Prokon continuous-beam PDF report**. The schedule can be an **Excel file** or a **schedule drawing** (PDF or PNG/JPG), read from the PDF text layer when possible or by Claude vision otherwise, and reviewed by you before the check runs.
+A web app that checks the reinforcement in a **beam schedule** against the **required steel from a Prokon continuous-beam PDF report**. The schedule can be an **Excel file** or a **schedule drawing** (PDF, DXF or PNG/JPG), read from the PDF text layer or the DXF's text when possible (free, no AI) or by Claude vision otherwise, and reviewed by you before the check runs.
 
 For every beam span it reports 3 position rows (left support, mid-span, right support). For each row it compares:
 
@@ -14,7 +14,7 @@ Any position where provided < required is flagged **FAIL**.
 ## Features
 
 - Upload the Excel schedule and Prokon PDF in the browser. Nothing to install for end users.
-- **Drawing mode**: upload the beam schedule drawing instead of an Excel file. Read from the PDF text layer when possible (free), otherwise with Claude vision; you can review and correct the table, and each finding is shown as a small table of drawing values vs Prokon requirement. See [Drawing mode](#drawing-mode).
+- **Drawing mode**: upload the beam schedule drawing instead of an Excel file. Read from the PDF text layer or a CAD drawing saved as DXF when possible (free, no AI), otherwise with Claude vision; you can review and correct the table, and each finding is shown as a small table of drawing values vs Prokon requirement. See [Drawing mode](#drawing-mode).
 - Picks the sheet automatically (the first one named *BEAM* or *SCHEDULE*).
 - Two schedule layouts:
   - **Type 1**: mark in col A, top bars C–E, bottom F–G, stirrups K, L, M
@@ -37,6 +37,35 @@ streamlit run app.py
 ```
 
 The app opens at http://localhost:8501.
+
+## Running locally for CAD files
+
+CAD files hold much more than the beam schedule (the whole sheet, often the whole project). Reading a DXF needs no API key and no internet connection, so for confidential drawings run the app on your own PC instead of the online app; nothing then leaves your computer.
+
+**One-time setup** (Windows, in a terminal opened in this folder):
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**Each time:**
+
+```bash
+.venv\Scripts\activate
+streamlit run app.py
+```
+
+The app opens in your browser at http://localhost:8501 and only runs on your PC (close the terminal to stop it). Choose **Schedule source → Drawing (PDF, DXF or image)**, upload the DXF and the Prokon report, review the table, then **▶ Run comparison (all beams)**.
+
+For large DXF files, raise the limits in a `.env` file next to `app.py` (copy `.env.example`), for example:
+
+```
+MAX_DXF_MB=200
+MAX_DXF_ENTITIES=3000000
+DXF_TIMEOUT_SECONDS=180
+```
 
 ## Deploy so anyone with the link can use it (Streamlit Community Cloud, free)
 
@@ -114,46 +143,77 @@ Prices are from the [Anthropic pricing page](https://platform.claude.com/docs/en
 
 ## Drawing mode
 
-Choose **Schedule source → Drawing (PDF or image)** to take the provided steel from a beam schedule drawing instead of an Excel file. Only the schedule source changes: the drawing is converted into a schedule table, and then the same flow as Excel mode runs (same Prokon upload, same **▶ Run comparison (all beams)** button, same results page, unmatched beams, downloads and AI Assistant). Excel mode needs no API key; drawing mode with the text layer doesn't either.
+Choose **Schedule source → Drawing (PDF, DXF or image)** to take the provided steel from a beam schedule drawing instead of an Excel file. Only the schedule source changes: the drawing is converted into a schedule table, and then the same flow as Excel mode runs (same Prokon upload, same **▶ Run comparison (all beams)** button, same results page, unmatched beams, downloads and AI Assistant). Excel mode needs no API key; drawing mode with the PDF text layer or a DXF doesn't either.
 
 Drawings can be older than the calculation. The purpose of drawing mode is to **surface discrepancies for a person to double-check**, not to certify the design.
 
 ### How the drawing is read
 
 1. **PDF text layer first (free, exact, nothing sent).** CAD-exported schedules usually keep every table cell as positioned text. The app finds the table from its header ("Mark", "Top Left", "Bottom Middle", "Stirrups Right"…) and reads each row from the word positions, exactly as written. No API key is needed and nothing leaves the server.
-2. **AI vision only if needed.** For scans and images without a text layer, or if you choose it, Claude reads the page images. The app first shows the **page count and an estimated cost** and asks you to tick **"I confirm I am allowed to send this drawing to Anthropic"**. Each page is sent as an overview plus overlapping close-up tiles. Claude transcribes the rows through a structured tool call and checks every bar and stirrup string with the app's own parser. Uses Anthropic only; with the shared key it counts against `MAX_DRAWING_CALLS_PER_SESSION` and `MAX_AI_CALLS_PER_DAY`.
+2. **DXF from CAD (free, exact, nothing sent).** Upload a CAD drawing saved as DXF and its text is read directly, with the same table logic as the PDF text layer. See [CAD files (DXF)](#cad-files-dxf).
+3. **AI vision only for scans and images.** For scans and images without a text layer, or if you choose it, Claude reads the page images. The app first shows the **page count and an estimated cost** and asks you to tick **"I confirm I am allowed to send this drawing to Anthropic"**. Each page is sent as an overview plus overlapping close-up tiles. Claude transcribes the rows through a structured tool call and checks every bar and stirrup string with the app's own parser. Uses Anthropic only; with the shared key it counts against `MAX_DRAWING_CALLS_PER_SESSION` and `MAX_AI_CALLS_PER_DAY`.
+
+### CAD files (DXF)
+
+A DXF stores the schedule text exactly as typed, with its position, so reading it is exact and costs $0. No AI is involved and nothing is sent anywhere. The rows feed the same review table, coverage line, possible-typo flags, optional **Reviewed** ticks, **Download as Excel**, comparison, results and AI Assistant as the PDF text layer. "Read from" shows **CAD text** and **Page** is the layout number (1 = Model). The layout name and drawing coordinates of each row are kept as position data only; they are not put in the table or in the Excel download.
+
+**What is read:** TEXT and MTEXT, attribute text in blocks, text inside blocks, and CAD table objects, in model space and every paper-space layout. Rotated schedules (e.g. a table turned 90° on the sheet) are read. Cell text is copied verbatim (arrows, dashes, `2H13+2H13`, `200x225/175`). Formatting codes are removed to give plain text. Codes that can carry meaning (underline, overline, strike-through, and stacked text such as the fraction `\S1/2;`) flag the cell `formatting_removed` for review. Codes that only change the look (font, height, width, colour, oblique angle) flag it `font_codes_removed`, which is shown but not highlighted. `%%c`, `%%d` and `%%p` are shown as Ø, ° and ±.
+
+**Several schedules:** if the file has more than one schedule table (e.g. in several layouts), the app lists them and selects the one whose headers match best; add the others if the schedule continues in them. If no table matches, the app lists the header names it found and the ones it expects.
+
+**DWG files are not read.** DWG is a closed format. Uploading a DWG shows: *"DWG cannot be read here. In your CAD software use Save As DXF (or export only the schedule sheet), then upload the DXF."* To get a DXF:
+
+- In your CAD software: **Save As → DXF** (any version), ideally of a file holding only the schedule sheet (e.g. copy the schedule to a new drawing, or use the export/WBLOCK command).
+- Or, optionally, the free **ODA File Converter** (Open Design Alliance) converts DWG to DXF on your own PC. It is not part of this app and is not bundled. Check its licence terms and get IT approval before installing anything on a company PC.
+
+**Upload the schedule sheet only.** The online app is not the place for whole-project CAD files: export only the schedule sheet, or run the app locally (see [Running locally for CAD files](#running-locally-for-cad-files)). The app stores nothing; the file lives only in memory for your browser session.
+
+**Not followed, with a warning:** external references (xrefs; bind them first), data links (tables linked to a spreadsheet), embedded objects such as a pasted Excel table (use Excel mode for those), attached images and PDF/DWF/DGN underlays.
+
+**Cannot be read:** text exploded into lines or polylines (e.g. after a PDF import into CAD), schedules inside xrefs or linked spreadsheets, embedded OLE objects, raster images of a schedule, and tables without a "Mark" header column. For text that is not horizontal or vertical (e.g. 45°), each angle is read on its own.
+
+**Limits** (protect the online app against huge or malformed files; raise them when running locally):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `MAX_DXF_MB` | 30 | Largest DXF accepted, in MB |
+| `MAX_DXF_ENTITIES` | 300000 | Most drawing entities read (including those inside blocks) |
+| `DXF_TIMEOUT_SECONDS` | 20 | Longest time spent opening and reading the file |
+
+Set them in Streamlit secrets or `.env`. When a limit is hit, the app says so and suggests exporting only the schedule sheet or running locally with a higher limit.
 
 ### Layout
 
 1. **Input files** (same box in both modes): Schedule source; the schedule on the left (Excel upload, sheet and format, or the drawing upload with its reading result such as "42 rows found, cost $0" and the reading method); the Prokon report on the right (one upload shared by both modes).
-2. **Review drawing schedule** (drawing mode only): coverage line, review table, **Check one beam against Prokon**, **⬇ Download schedule as Excel (Type 2 layout)**, then **▶ Run comparison (all beams)** (enabled straight away for text-layer rows; rows read by AI vision must be ticked first, and the table confirmed once). When the button is disabled, the reasons are listed under it.
+2. **Review drawing schedule** (drawing mode only): coverage line, review table, **Check one beam against Prokon**, **⬇ Download schedule as Excel (Type 2 layout)**, then **▶ Run comparison (all beams)** (enabled straight away for text-layer and CAD rows; rows read by AI vision must be ticked first, and the table confirmed once). When the button is disabled, the reasons are listed under it.
 3. **Results** (identical in both modes): the tabs **Results** | **Findings to check** (drawing mode only) | **AI Assistant** are shown from the start, with "Run a comparison to see results" until a comparison has run; then the success line and metrics appear above them. The Results tab ends with an always-visible **Unmatched beams** table ("Beam mark", "Where").
 
 ### Review, coverage and findings
 
-- **Review table:** rows read by **AI vision** must each be ticked **Reviewed** before the comparison can run, because AI can misread a value, and the whole table must be confirmed once with **"I have compared this table with the drawing"**. **☑ Tick all unflagged rows** ticks only the rows without a concern; each highlighted row needs its own tick. Text-layer rows are the drawing's own text, copied exactly, so ticking them is optional (a checklist) and no confirmation is needed.
-- **Highlights mean a genuine concern:** yellow for low confidence, a bar or stirrup that does not parse, a possible typo, spans that do not continue (`continuity_mismatch`), or (once the Prokon report is uploaded) no Prokon result, another Prokon span used, or zero required steel; red for a beam mark that appears more than once. Other flags (arrows read as written, stirrup legs not stated, cantilever end, tapered size, medium confidence) are listed in the Flags column without a highlight. The page number and the reading method ("PDF text layer" or "AI vision") are shown. **Check one beam against Prokon** shows the selected span as a readable table: Left / Middle / Right with the drawing's top bars, bottom bars and stirrups next to the Prokon requirement and OK/FAIL, with the page number. Cells can be corrected and rows added or deleted.
+- **Review table:** rows read by **AI vision** must each be ticked **Reviewed** before the comparison can run, because AI can misread a value, and the whole table must be confirmed once with **"I have compared this table with the drawing"**. **☑ Tick all unflagged rows** ticks only the rows without a concern; each highlighted row needs its own tick. Text-layer and CAD rows are the drawing's own text, copied exactly, so ticking them is optional (a checklist) and no confirmation is needed.
+- **Highlights mean a genuine concern:** yellow for low confidence, a bar or stirrup that does not parse, a possible typo, spans that do not continue (`continuity_mismatch`), CAD formatting that can carry meaning (`formatting_removed`), or (once the Prokon report is uploaded) no Prokon result, another Prokon span used, or zero required steel; red for a beam mark that appears more than once. Other flags (arrows read as written, stirrup legs not stated, cantilever end, tapered size, CAD font codes removed, medium confidence) are listed in the Flags column without a highlight. The page number (layout number for a DXF) and the reading method ("PDF text layer", "CAD text" or "AI vision") are shown. **Check one beam against Prokon** shows the selected span as a readable table: Left / Middle / Right with the drawing's top bars, bottom bars and stirrups next to the Prokon requirement and OK/FAIL, with the page number. Cells can be corrected and rows added or deleted.
 - **Possible typos:** a bar count that cannot fit the beam width even in two layers (for example `33H25` in a 300 mm beam, probably meant `3H25`) is marked **⚠ possible typo** in the review table and listed at the top of **Findings to check**. Each `+` group of a notation (e.g. `6H32+6H25+6H25`) is checked on its own against the width from the Size column, using typical detailing values (25 mm cover, 10 mm links, clear spacing at least the bar diameter or 25 mm). It is a highlight only: the checker still uses the value as written, so OK/FAIL never changes; correct the cell during review if it is a typo.
 - **Nominal Asv/sv:** the Prokon report's nominal Asv/sv is shown in an extra column of the results and exports, for information only. The check itself uses the required Asv/sv, as before.
 - **Coverage, shown prominently:** "found **X of Y** Prokon beam marks on the drawing", with the lists of Prokon beams missing from the drawing and drawing beams missing from Prokon.
 - **Download as Excel (converter):** the reviewed schedule as an `.xlsx` in the Type 2 layout (mark in B, top bars E-G, bottom bars H-J, stirrups L-N), with every cell copied verbatim (arrows, dashes and combined bars such as `2H13+2H13` are not changed). Page, reading method and flags are on a separate sheet that Excel mode does not read. Opening this file in Excel mode gives the same results as the drawing-mode comparison (tested).
-- **Results** carry one extra line, **"AI-read drawing vs Prokon · coverage: found X of Y"**, which also says whether AI was involved in reading (with the PDF text layer it was not). The CSV/Excel exports add "Schedule source" and "Read from" columns.
+- **Results** carry one extra line, **"AI-read drawing vs Prokon · coverage: found X of Y"**, which also says whether AI was involved in reading (with the PDF text layer or a DXF it was not). The CSV/Excel exports add "Schedule source" and "Read from" columns.
 - **Findings to check tab:** every span with a FAIL and every drawing beam that is not in Prokon, each shown as the same small table (drawing values vs Prokon requirement vs OK/FAIL, with the page number), so a person can check it against the drawing in seconds.
 
 ### Limits and cost
 
-- Text-layer reading: free.
+- Text-layer and DXF reading: free.
+- DXF: `MAX_DXF_MB`, `MAX_DXF_ENTITIES`, `DXF_TIMEOUT_SECONDS` (see [CAD files (DXF)](#cad-files-dxf)).
 - AI vision: about $0.20-0.40 for one A1 sheet with Sonnet 5.5, $0.40-0.70 with Opus 5.5 and $0.50-0.90 with Opus 5 (estimate shown before every run). Readings are cached per file contents and model for the browser session: uploading the same drawing again in the same session makes no new AI calls (a page refresh or a new session does). With the shared key, each model request counts against the drawing allowance once its response has arrived (a page can take several requests: notation checks and a corrected resubmission); a request that fails with an error is not counted. If a reading stops (error or allowance reached), the pages already read are kept, and **Read the N page(s) that were not read** sends only those pages.
 - `MAX_DRAWING_PAGES` (default 10) pages per upload; `DRAWING_MAX_OUTPUT_TOKENS` (default 32000) per AI request.
 - `EXTRA_READING_RULES` (Streamlit secrets or `.env`, optional): private conventions added to the AI instructions at runtime, never shown in the app.
 
 **AI Assistant in drawing mode:** the same assistant, access code and limits as in Excel mode. It also gets a `get_schedule_source` tool: how each row was read (method, page), which rows were uncertain or flagged, coverage, and beams only on the drawing or only in Prokon. It sees the comparison results rows and this summary, never the drawing itself.
 
-**What is sent to Anthropic:** with text-layer reading, nothing from the drawing. With AI vision, the drawing page images and their PDF text. The Prokon report and Excel files are never sent. The app stores nothing; readings live only in the browser session.
+**What is sent to Anthropic:** with text-layer or DXF reading, nothing from the drawing. With AI vision, the drawing page images and their PDF text. The Prokon report and Excel files are never sent. The app stores nothing; readings live only in the browser session.
 
 ### Known limitations
 
-- The text-layer reader needs a "Mark" header and one table row per text line. Unusual layouts (rotated tables, merged multi-line cells) fall back to AI vision.
+- The PDF text-layer and DXF readers need a "Mark" header and one table row per text line. In a PDF, unusual layouts (rotated tables, merged multi-line cells) fall back to AI vision; a DXF reads rotated tables but not merged multi-line cells.
 - AI vision uses Anthropic only. Zhipu GLM would need a GLM vision model with function calling.
 - Link type codes (A1, Normal…) describe a stirrup shape, not the number of legs. When legs are not written the checker assumes 2.
 - Bottom bars B3 are shown but, as in Excel mode, not used by the checker. For a blank support end the existing checker rule still copies the other end's top bars and stirrups.
@@ -170,6 +230,7 @@ Drawings can be older than the calculation. The purpose of drawing mode is to **
 │   ├── agent.py              # AI assistant: Claude / GLM + tools over the results
 │   ├── access.py             # Access code, lockout and AI call limits
 │   ├── text_layer.py         # Drawing mode: read schedule tables from the PDF text layer (no AI)
+│   ├── cad_reader.py         # Drawing mode: collect positioned text from a DXF for text_layer (no AI)
 │   ├── plausibility.py       # Drawing mode: possible-typo screening of bar counts (highlight only)
 │   ├── drawing_reader.py     # Drawing mode: pages, AI vision reading, checks, review table, per-beam tables
 │   └── prompts.py            # All prompt text (assistant and extraction rules)
@@ -200,6 +261,14 @@ pytest
 ```
 
 `tests/test_regression.py` runs an end-to-end check when a PDF and XLSX are present in `sample_data/`. Otherwise it is skipped. The drawing-mode tests use mocked model responses and make no API calls.
+
+**Optional real DXF test** (free, no API): put a DXF in `sample_data/` (git-ignored) or point `SAMPLE_DXF` to one, then run
+
+```bash
+RUN_SAMPLE_DXF=1 pytest -s tests/test_cad_reader.py -k real_dxf
+```
+
+It prints the tables found and any warnings. The other DXF tests use small files generated with ezdxf.
 
 **Optional AI vision accuracy test** (calls the API and costs money): put a schedule drawing in `sample_data/`, then run
 
