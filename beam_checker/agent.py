@@ -156,6 +156,8 @@ def _get_summary(result):
         "rows_fail": sum(r[12] == "FAIL" for r in rows),
         "rows_fail_flexure": sum(r[6] != "OK" for r in rows),
         "rows_fail_shear": sum(r[11] != "OK" for r in rows),
+        "rows_fail_both": sum(r[6] != "OK" and r[11] != "OK" for r in rows),
+        "fact": fixes.failure_counts(result)["fact"],
         "beam_spans_with_fail": failing,
         "in_pdf_missing_in_excel": result.pdf_only,
         "in_excel_missing_in_pdf": result.excel_only,

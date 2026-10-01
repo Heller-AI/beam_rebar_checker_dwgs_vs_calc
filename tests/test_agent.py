@@ -189,3 +189,17 @@ def test_assistant_uses_schedule_tool_with_claude():
     assert answer.text == "B999 is only on the drawing."
     assert "get_schedule_source" in sent_tools[0]
     assert "B999" in messages[2]["content"][0]["content"]
+
+
+def test_summary_carries_the_counts_as_a_fact_sentence():
+    s = agent.execute_tool("get_summary", {}, RESULT)
+    assert s["rows_fail_both"] == 0
+    assert s["fact"] == "2 of 3 position rows fail in 2 span(s): 1 fail flexure, 1 fail shear, 0 fail both."
+
+
+def test_prompt_rules_for_counts_tables_and_units():
+    p = agent.SYSTEM_PROMPT
+    assert "quote it word for word" in p and "Do not repeat those tables" in p
+    assert '"Provided / required (%)"' in p and "every cell has one unit" in p
+    assert "call get_failures once" in p
+
