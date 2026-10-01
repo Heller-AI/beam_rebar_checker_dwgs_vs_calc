@@ -88,8 +88,8 @@ def clear_chat():
 TABLE_LABELS = {
     "beam": "Beam", "position": "Position", "provided_as": "Provided now", "required": "Required",
     "provided": "Provided", "shortfall": "Shortfall", "provided_over_required_pct": "Provided / required (%)",
-    "suggested_change": "Suggested change", "suggested_provides": "Suggested provides",
-    "suggested_over_required_pct": "Suggested / required (%)", "fit": "Fit",
+    "suggested_change": "Suggested change", "fit": "Fit", "suggested_provides": "Suggested provides",
+    "suggested_over_required_pct": "Suggested / required (%)",
 }
 
 
@@ -108,10 +108,9 @@ def render_failure_tables(payload):
         for c in ("required", "provided", "shortfall", "suggested_provides"):
             if c in df.columns:
                 df[c] = [f"{v:.{decimals}f}" if isinstance(v, (int, float)) else "-" for v in df[c]]
-        labels = {c: (f"{TABLE_LABELS[c]} ({unit})" if c in ("required", "provided", "shortfall", "suggested_provides")
-                      else TABLE_LABELS[c]) for c in cols}
-        st.markdown(f"*{check}*")
-        st.dataframe(df.rename(columns=labels), hide_index=True, width="stretch")
+        # the unit is given once per table (each table has a single unit) so the columns fit the page
+        st.markdown(f"*{check}: Required, Provided, Shortfall and Suggested provides in {unit}*")
+        st.dataframe(df.rename(columns={c: TABLE_LABELS[c] for c in cols}), hide_index=True, width="stretch")
     if payload.get("note"):
         st.caption(payload["note"])
 

@@ -40,7 +40,8 @@ def test_table_is_drawn_by_the_app_and_survives_a_rerun():
     _, at = run_question(NS(stop_reason="end_turn", content=[NS(type="text", text="One FAIL, see the table.")]))
     assert not at.exception
     tables = failure_tables(at)
-    assert len(tables) == 1 and tables[0].iloc[0]["Shortfall (mm²)"] == "32.6"
+    assert len(tables) == 1 and tables[0].iloc[0]["Shortfall"] == "32.6"
+    assert any(m.value.startswith("*Flexure: Required, Provided, Shortfall and Suggested provides in mm²") for m in at.markdown)
     assert any("1 fail flexure" in m.value for m in at.markdown)
     assert [e.label for e in at.expander if "tool call" in e.label] == ["🔧 1 tool call(s), 2 model call(s)"]
 
