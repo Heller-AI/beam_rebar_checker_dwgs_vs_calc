@@ -53,15 +53,20 @@ def to_excel_bytes(df):
     return buf.getvalue()
 
 
-EXAMPLE_QUESTIONS = [
+# Example question buttons. Fix suggestions stay available by typing the question.
+EXCEL_QUESTIONS = [
     "Summarise the failures",
     "Why does each failing beam fail, and by how much?",
-    "Suggest the smallest bar or stirrup change to fix each FAIL",
     "Which beams are missing from the schedule or the Prokon report?",
+]
+DRAWING_QUESTIONS = [                      # drawing mode leads with discrepancies
+    "List each FAIL with its shortfall",
+    "Which beams are missing from the drawing or the Prokon report?",
+    "Which rows have a possible typo?",
+    "Which rows were uncertain, or only on the drawing or only in Prokon?",
 ]
 
 
-DRAWING_QUESTION = "Which rows were uncertain, or only on the drawing or only in Prokon?"
 
 PROVIDERS = {
     "anthropic": {"label": "Anthropic (Claude)", "key": "ANTHROPIC_API_KEY", "model": "ANTHROPIC_MODEL",
@@ -151,7 +156,10 @@ def render_assistant(result, provider, api_key, model, key_mode, limits, secrets
             else:
                 st.markdown(msg["text"])
 
-    questions = EXAMPLE_QUESTIONS + ([DRAWING_QUESTION] if schedule else [])
+    if schedule:
+        st.info("The drawing may be pre-update: a FAIL can mean the drawing and the calculation differ, "
+                "not that the beam is under-reinforced.")
+    questions = DRAWING_QUESTIONS if schedule else EXCEL_QUESTIONS
     cols = st.columns(len(questions))
     clicked = next((q for c, q in zip(cols, questions) if c.button(q, width="stretch")), None)
     question = st.chat_input("Ask about the results...") or clicked

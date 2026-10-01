@@ -100,3 +100,11 @@ def test_flagged_row_is_shown_first_but_results_keep_reading_order():
     sched = pd.read_excel(io.BytesIO(dr.table_to_type2_excel(table)), sheet_name=dr.SCHEDULE_SHEET, header=None)
     assert list(sched[checker.EXCEL_FORMATS["Format 2"]["mark"]][1:]) == ["B101", "B102", "B103"]
 
+
+def test_schedule_summary_lists_possible_typos_for_the_assistant():
+    table = dr.records_to_table([(1, rec("B136", T3="33H25"), {"read": dr.READ_TEXT}),
+                                 (1, rec("B137"), {"read": dr.READ_TEXT})])
+    s = dr.schedule_summary(table, dr.READ_TEXT, [], [], 2, 2)
+    assert s["possible_typos"] == [{"mark": "B136", "page": "1", "issues": [
+        "T3 = 33H25: more than 10 bars of H25 cannot fit a 300 mm wide beam in 2 layers"]}]
+

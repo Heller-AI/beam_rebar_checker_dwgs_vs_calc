@@ -55,3 +55,12 @@ def test_untraceable_numbers_are_warned_not_blocked():
     _, at = run_question(NS(stop_reason="end_turn", content=[NS(type="text", text="Short by 32.6; also 4321.0.")]))
     assert any("Short by 32.6" in m.value for m in at.markdown)            # the answer is still shown
     assert any("could not be traced" in w.value and w.value.endswith("4321.0") for w in at.warning)
+
+
+def test_excel_mode_buttons():
+    _, at = run_question(NS(stop_reason="end_turn", content=[NS(type="text", text="ok")]))
+    labels = [b.label for b in at.button]
+    assert "Summarise the failures" in labels and "Which beams are missing from the schedule or the Prokon report?" in labels
+    assert not any(label.startswith("Suggest the smallest") for label in labels)
+    assert not any("pre-update" in i.value for i in at.info)
+

@@ -835,6 +835,9 @@ def schedule_summary(table, method, pdf_only, excel_only, n_prokon, n_found, not
         "prokon_beams_not_on_drawing": list(pdf_only),
         "drawing_beams_not_in_prokon": list(excel_only),
         "rows_needing_extra_care": [r for r in rows if r["needed_extra_care"]],
+        "possible_typos": [{"mark": mark, "page": _cell(row["Page"]),
+                            "issues": [plausibility.describe(i) for i in issues]}
+                           for mark, row, issues in typo_rows(table)],
         "rows": [{k: r[k] for k in ("mark", "page", "read_from")} for r in rows],
         "reader_notes": notes or {},
     }
