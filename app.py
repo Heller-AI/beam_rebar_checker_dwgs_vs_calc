@@ -269,8 +269,8 @@ def render_review(state, prokon_up, limits):
     extraction, fp, files, pages = state["extraction"], state["fp"], state["files"], state["pages"]
     st.subheader("2. Review drawing schedule")
     if extraction.method == drawing_reader.READ_TEXT:
-        st.caption("Read from the PDF text layer: the values are the drawing's own text. Tick each row after "
-                   "checking it; the drawing may be older than the calculation.")
+        st.caption("Read from the PDF text layer: the values are the drawing's own text, copied exactly. "
+                   "The drawing may be older than the calculation; the comparison will show the differences.")
     else:
         st.warning("These values were read by AI from the drawing images. Check every row against the drawing, "
                    "especially the highlighted ones, and correct the table.")
@@ -289,15 +289,23 @@ def render_review(state, prokon_up, limits):
         extraction.table.style.apply(highlight, axis=1), key=f"review_{fp}", num_rows="dynamic", hide_index=True,
         width="stretch", height=440,
         column_config={
-            "Reviewed": st.column_config.CheckboxColumn("Reviewed ✓", help="Tick after checking this row against the drawing"),
+            "Reviewed": st.column_config.CheckboxColumn(
+                "Reviewed ✓", help="Required for rows read by AI vision; optional for PDF text-layer rows"),
             **{c: st.column_config.Column(disabled=True) for c in drawing_reader.LOCKED_COLUMNS},
             "Confidence": st.column_config.SelectboxColumn(options=["high", "medium", "low"], width="small"),
         },
     )
-    n_done = int(edited["Reviewed"].fillna(False).astype(bool).sum())
+    n_done, n_required = drawing_reader.tick_status(edited)
     n_flag = int((edited["Review"].fillna("") != "").sum())
-    st.caption(f"**{n_done} of {len(edited)} row(s) ticked as reviewed** · {n_flag} highlighted (yellow) for extra "
-               "care. Edit cells to correct them; add or delete rows (select a row, then press Delete).")
+    if n_required:
+        st.caption(f"**Why ticks:** AI vision can misread a value, so each AI-read row must be ticked after you check "
+                   f"it against the drawing (**{n_done} of {n_required} ticked**). Text-layer rows are the drawing's "
+                   "own text; ticking them is optional.")
+    else:
+        st.caption("**Why ticks:** they are an optional checklist here. These rows are the drawing's own text, copied "
+                   "exactly; only rows read by AI vision must be ticked.")
+    st.caption(f"{len(edited)} row(s) · {n_flag} highlighted (yellow) for extra care. Edit cells to correct them; "
+               "add or delete rows (select a row, then press Delete).")
     with st.expander("What the flags and highlights mean"):
         st.markdown("\n".join(f"- `{k}`: {v}" for k, v in FLAG_DESCRIPTIONS.items()))
         st.markdown("Bottom bars **B3** are shown but, as in Excel mode, the checker does not use them. "
@@ -333,14 +341,14 @@ def render_review(state, prokon_up, limits):
     ack = True
     if extraction.page_errors:
         ack = st.checkbox("Continue without the page(s) that could not be read")
-    reviewed = drawing_reader.all_reviewed(edited)
+    reviewed = drawing_reader.ready_to_compare(edited)
 
     run = st.button(RUN_LABEL, type="primary", key="run_drawing",
                     disabled=bool(conflicts) or not ack or not prokon_up or not reviewed)
     if not prokon_up:
         st.caption("Upload the Prokon report to enable the comparison.")
     elif not reviewed:
-        st.caption(f"Enabled when every row is ticked as reviewed ({n_done} of {len(edited)} so far).")
+        st.caption(f"Enabled when every AI-read row is ticked ({n_done} of {n_required} so far).")
     if run:
         bar = st.progress(0.0, text="Starting...")
         try:

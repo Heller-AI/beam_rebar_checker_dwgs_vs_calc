@@ -14,7 +14,7 @@ Any position where provided < required is flagged **FAIL**.
 ## Features
 
 - Upload the Excel schedule and Prokon PDF in the browser. Nothing to install for end users.
-- **Drawing mode**: upload the beam schedule drawing instead of an Excel file. Read from the PDF text layer when possible (free), otherwise with Claude vision; you review the table, and each finding is shown as a small table of drawing values vs Prokon requirement. See [Drawing mode](#drawing-mode).
+- **Drawing mode**: upload the beam schedule drawing instead of an Excel file. Read from the PDF text layer when possible (free), otherwise with Claude vision; you can review and correct the table, and each finding is shown as a small table of drawing values vs Prokon requirement. See [Drawing mode](#drawing-mode).
 - Picks the sheet automatically (the first one named *BEAM* or *SCHEDULE*).
 - Two schedule layouts:
   - **Type 1**: mark in col A, top bars C–E, bottom F–G, stirrups K, L, M
@@ -116,12 +116,12 @@ Drawings can be older than the calculation. The purpose of drawing mode is to **
 ### Layout
 
 1. **Input files** (same box in both modes): Schedule source; the schedule on the left (Excel upload, sheet and format, or the drawing upload with its reading result such as "42 rows found, cost $0" and the reading method); the Prokon report on the right (one upload shared by both modes).
-2. **Review drawing schedule** (drawing mode only): coverage line, review table, **Check one beam against Prokon**, **⬇ Download schedule as Excel (Type 2 layout)**, then **▶ Run comparison (all beams)**, enabled when every row is ticked.
+2. **Review drawing schedule** (drawing mode only): coverage line, review table, **Check one beam against Prokon**, **⬇ Download schedule as Excel (Type 2 layout)**, then **▶ Run comparison (all beams)** (enabled straight away for text-layer rows; rows read by AI vision must be ticked first).
 3. **Results** (identical in both modes): success line, metrics, then the tabs **Results** | **Findings to check** (drawing mode only) | **AI Assistant**. The Results tab ends with an always-visible **Unmatched beams** table ("Beam mark", "Where").
 
 ### Review, coverage and findings
 
-- **Review table:** every row must be ticked **Reviewed** before the comparison can run, whichever way it was read. Rows with medium/low confidence or a flag are highlighted in yellow. The page number and the reading method ("PDF text layer" or "AI vision") are shown. **Check one beam against Prokon** shows the selected span as a readable table: Left / Middle / Right with the drawing's top bars, bottom bars and stirrups next to the Prokon requirement and OK/FAIL, with the page number. Cells can be corrected and rows added or deleted.
+- **Review table:** rows read by **AI vision** must each be ticked **Reviewed** before the comparison can run, because AI can misread a value. Text-layer rows are the drawing's own text, copied exactly, so ticking them is optional (a checklist). Rows with medium/low confidence or a flag are highlighted in yellow. The page number and the reading method ("PDF text layer" or "AI vision") are shown. **Check one beam against Prokon** shows the selected span as a readable table: Left / Middle / Right with the drawing's top bars, bottom bars and stirrups next to the Prokon requirement and OK/FAIL, with the page number. Cells can be corrected and rows added or deleted.
 - **Coverage, shown prominently:** "found **X of Y** Prokon beam marks on the drawing", with the lists of Prokon beams missing from the drawing and drawing beams missing from Prokon.
 - **Download as Excel (converter):** the reviewed schedule as an `.xlsx` in the Type 2 layout (mark in B, top bars E-G, bottom bars H-J, stirrups L-N), with every cell copied verbatim (arrows, dashes and combined bars such as `2H13+2H13` are not changed). Page, reading method and flags are on a separate sheet that Excel mode does not read. Opening this file in Excel mode gives the same results as the drawing-mode comparison (tested).
 - **Results** carry one extra line, **"AI-read drawing vs Prokon · coverage: found X of Y"**, which also says whether AI was involved in reading (with the PDF text layer it was not). The CSV/Excel exports add "Schedule source" and "Read from" columns.

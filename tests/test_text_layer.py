@@ -99,15 +99,19 @@ def test_text_layer_extraction_table_and_row_positions():
     assert dr.read_text_layer([dr.Page(1, "x", Image.new("L", (10, 10)))]) is None
 
 
-def test_every_row_must_be_ticked():
+def test_ticks_are_optional_for_text_layer_rows_and_required_for_ai_rows():
     table = dr.read_text_layer([_page_with_tables()]).table
-    assert not dr.all_reviewed(table)
-    table["Reviewed"] = True
-    assert dr.all_reviewed(table)
+    assert dr.tick_status(table) == (0, 0) and dr.ready_to_compare(table)          # text layer: no ticks needed
+    table.loc[0, "Read from"] = dr.READ_VISION                                       # pretend one row came from AI
+    table.loc[1, "Read from"] = dr.READ_VISION
+    assert dr.tick_status(table) == (0, 2) and not dr.ready_to_compare(table)
     table["Reviewed"] = table["Reviewed"].astype(object)   # rows added in the editor can have an empty tick
-    table.loc[0, "Reviewed"] = None
-    assert not dr.all_reviewed(table)
-    assert not dr.all_reviewed(table.iloc[0:0])
+    table.loc[0, "Reviewed"] = True
+    table.loc[1, "Reviewed"] = None
+    assert dr.tick_status(table) == (1, 2) and not dr.ready_to_compare(table)
+    table.loc[1, "Reviewed"] = True
+    assert dr.ready_to_compare(table)
+    assert not dr.ready_to_compare(table.iloc[0:0])
 
 
 def test_coverage_counts_prokon_marks_found_on_the_drawing():

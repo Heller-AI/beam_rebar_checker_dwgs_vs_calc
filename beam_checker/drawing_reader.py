@@ -580,9 +580,21 @@ def records_to_table(page_records):
     return build_table(page_records)[0]
 
 
-def all_reviewed(table):
-    """True when every row has its Reviewed tick (the comparison runs only then)."""
-    return bool(len(table)) and bool(table["Reviewed"].fillna(False).astype(bool).all())
+def tick_status(table):
+    """(ticked, required) for rows that must be ticked before the comparison: rows read by AI vision.
+
+    Text-layer rows are the drawing's own text, copied exactly, and hand-added rows were typed by the
+    reviewer, so ticking those is optional.
+    """
+    required = table["Read from"].fillna("") == READ_VISION
+    ticked = table["Reviewed"].fillna(False).astype(bool)
+    return int((ticked & required).sum()), int(required.sum())
+
+
+def ready_to_compare(table):
+    """True when the table has rows and every AI-read row is ticked."""
+    done, required = tick_status(table)
+    return bool(len(table)) and done == required
 
 
 def _pt_box_to_px(page, box):
