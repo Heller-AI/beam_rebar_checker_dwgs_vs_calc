@@ -28,7 +28,7 @@ import pypdfium2 as pdfium
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from . import text_layer
+from . import plausibility, text_layer
 from .checker import ScheduleRecord
 from .parsers import clean_suffix, is_arrow_symbol, normalize_str, parse_bar_notation, parse_stirrup_single_str
 from .prompts import FLAG_DESCRIPTIONS, extraction_system_prompt
@@ -511,6 +511,8 @@ def _add_checks(rows):
             flags.append("legs_not_stated")
         if "/" in (rec["size"] or ""):
             flags.append("tapered_size")
+        if plausibility.row_issues(rec):
+            flags.append("possible_typo")
         rec = {**rec, "flags": flags}
         if "notation_invalid" in flags or "unreadable" in flags:
             rec["confidence"] = "low"
@@ -665,6 +667,20 @@ def beam_detail(row, checks=None):
     return pd.DataFrame(out)
 
 
+def typo_rows(table):
+    """[(beam mark, table row, issues)] for rows whose bar counts look like typos, from the table as it is
+    now (so a value corrected during review is no longer reported). Highlight only."""
+    out = []
+    for _, row in table.iterrows():
+        mark = _cell(row["Beam mark"])
+        if not mark:
+            continue
+        issues = plausibility.row_issues({k: _cell(row[k]) for k in ("Size", *BAR_FIELDS)})
+        if issues:
+            out.append((mark, row, issues))
+    return out
+
+
 def coverage(table, prokon_marks):
     """How many Prokon beam marks appear on the drawing (matched by base mark, like the checker)."""
     def base(m):
@@ -681,7 +697,8 @@ def coverage(table, prokon_marks):
 def refresh_review_column(table):
     """Recompute the Review marker and put rows to check first (reading order otherwise kept)."""
     table = table.copy()
-    table["Review"] = ["⚠ check" if needs_review(c, f) else "" for c, f in zip(table["Confidence"], table["Flags"])]
+    table["Review"] = [("⚠ possible typo" if "possible_typo" in str(f) else "⚠ check") if needs_review(c, f) else ""
+                       for c, f in zip(table["Confidence"], table["Flags"])]
     order = (table["Review"] == "").astype(int)  # rows to check first, otherwise keep reading order
     return table.assign(_o=order).sort_values("_o", kind="stable").drop(columns="_o").reset_index(drop=True)
 
@@ -726,10 +743,26 @@ def table_conflicts(table):
     return sorted({_cell(m) for m in table["Beam mark"] if normalize_str(_cell(m)) in dup})
 
 
+def reading_order(table):
+    """The table in the drawing's reading order (Row IDs R1, R2, ... are assigned when the drawing is read).
+
+    The review table shows rows to check first; results and exports must not depend on that, so they
+    use this order. Rows added by hand (no Row ID) keep their place after the read rows.
+    """
+    if "Row ID" not in table.columns or table.empty:
+        return table
+
+    def key(v):
+        v = _cell(v)
+        return int(v[1:]) if v[:1] == "R" and v[1:].isdigit() else 10**9
+
+    return table.assign(_k=[key(v) for v in table["Row ID"]]).sort_values("_k", kind="stable").drop(columns="_k")
+
+
 def table_to_records(table):
-    """Reviewed table -> ScheduleRecords for run_comparison_records. B3 is not used by the checker."""
+    """Reviewed table -> ScheduleRecords for run_comparison_records, in reading order. B3 is not used."""
     records = []
-    for _, r in table.iterrows():
+    for _, r in reading_order(table).iterrows():
         mark = _cell(r["Beam mark"])
         if not mark:
             continue
@@ -766,6 +799,7 @@ def table_to_type2_excel(table):
     for name, idx in cols.items():
         header[idx] = "MARK" if name == "Beam mark" else name.upper()
     rows = [header]
+    table = reading_order(table)
     for _, r in table.iterrows():
         if not _cell(r["Beam mark"]):
             continue

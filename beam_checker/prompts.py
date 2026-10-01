@@ -36,6 +36,8 @@ FLAG_DESCRIPTIONS = {
     "conflict": "The same beam mark appears more than once with different values",
     "continuity_mismatch": "Support bars of consecutive spans (-1/-2) do not match",
     "tapered_size": "Size has a varying depth (e.g. 200x225/175)",
+    "possible_typo": "A bar count cannot fit the beam width even in two layers (e.g. 33H25 in a 300 mm beam); "
+                     "probably a typo on the drawing. Highlight only: OK/FAIL is not changed",
 }
 
 EXTRACTION_RULES = """You read structural beam schedule drawings and extract each beam's provided

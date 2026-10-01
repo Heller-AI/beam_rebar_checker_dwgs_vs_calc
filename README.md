@@ -122,6 +122,7 @@ Drawings can be older than the calculation. The purpose of drawing mode is to **
 ### Review, coverage and findings
 
 - **Review table:** rows read by **AI vision** must each be ticked **Reviewed** before the comparison can run, because AI can misread a value. Text-layer rows are the drawing's own text, copied exactly, so ticking them is optional (a checklist). Rows with medium/low confidence or a flag are highlighted in yellow. The page number and the reading method ("PDF text layer" or "AI vision") are shown. **Check one beam against Prokon** shows the selected span as a readable table: Left / Middle / Right with the drawing's top bars, bottom bars and stirrups next to the Prokon requirement and OK/FAIL, with the page number. Cells can be corrected and rows added or deleted.
+- **Possible typos:** a bar count that cannot fit the beam width even in two layers (for example `33H25` in a 300 mm beam, probably meant `3H25`) is marked **⚠ possible typo** in the review table and listed at the top of **Findings to check**. Each `+` group of a notation (e.g. `6H32+6H25+6H25`) is checked on its own against the width from the Size column, using typical detailing values (25 mm cover, 10 mm links, clear spacing at least the bar diameter or 25 mm). It is a highlight only: the checker still uses the value as written, so OK/FAIL never changes; correct the cell during review if it is a typo.
 - **Coverage, shown prominently:** "found **X of Y** Prokon beam marks on the drawing", with the lists of Prokon beams missing from the drawing and drawing beams missing from Prokon.
 - **Download as Excel (converter):** the reviewed schedule as an `.xlsx` in the Type 2 layout (mark in B, top bars E-G, bottom bars H-J, stirrups L-N), with every cell copied verbatim (arrows, dashes and combined bars such as `2H13+2H13` are not changed). Page, reading method and flags are on a separate sheet that Excel mode does not read. Opening this file in Excel mode gives the same results as the drawing-mode comparison (tested).
 - **Results** carry one extra line, **"AI-read drawing vs Prokon · coverage: found X of Y"**, which also says whether AI was involved in reading (with the PDF text layer it was not). The CSV/Excel exports add "Schedule source" and "Read from" columns.
@@ -157,6 +158,7 @@ Drawings can be older than the calculation. The purpose of drawing mode is to **
 │   ├── agent.py              # AI assistant: Claude / GLM + tools over the results
 │   ├── access.py             # Access code, lockout and AI call limits
 │   ├── text_layer.py         # Drawing mode: read schedule tables from the PDF text layer (no AI)
+│   ├── plausibility.py       # Drawing mode: possible-typo screening of bar counts (highlight only)
 │   ├── drawing_reader.py     # Drawing mode: pages, AI vision reading, checks, review table, per-beam tables
 │   └── prompts.py            # All prompt text (assistant and extraction rules)
 ├── tests/                    # pytest unit + regression tests

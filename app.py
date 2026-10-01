@@ -14,7 +14,7 @@ import streamlit as st
 
 from beam_checker import EXCEL_FORMATS, RESULT_COLUMNS, run_comparison, run_comparison_records
 from beam_checker.checker import check_span, span_requirements
-from beam_checker import access, agent, drawing_reader
+from beam_checker import access, agent, drawing_reader, plausibility
 from beam_checker.prompts import FLAG_DESCRIPTIONS
 
 st.set_page_config(page_title="Beam Rebar Checker", page_icon="🏗️", layout="wide")
@@ -296,6 +296,7 @@ def render_review(state, prokon_up, limits):
             "Reviewed": st.column_config.CheckboxColumn(
                 "Reviewed ✓", help="Required for rows read by AI vision; optional for PDF text-layer rows"),
             **{c: st.column_config.Column(disabled=True) for c in drawing_reader.LOCKED_COLUMNS},
+            "Review": st.column_config.Column(disabled=True, width=140),
             "Confidence": st.column_config.SelectboxColumn(options=["high", "medium", "low"], width="small"),
         },
     )
@@ -411,39 +412,58 @@ def show_beam_check(table, mark, prokon_up):
 
 
 def render_findings(df_all, result, ctx):
-    """Every FAIL span and every drawing-only beam as a small readable table (no AI, no images)."""
+    """Possible typos, every FAIL span and every drawing-only beam as small readable tables (no AI, no images)."""
     if not ctx:
         return
     table = ctx["table"]
     fails = df_all[df_all["Overall Status"] == "FAIL"]
-    st.markdown(f"**{fails['Beam Mark'].nunique()} span(s) with a FAIL**, "
+    typos = drawing_reader.typo_rows(table)
+    typo_marks = {mark for mark, _, _ in typos}
+    st.markdown(f"**{len(typos)} possible typo(s)**, "
+                f"**{fails['Beam Mark'].nunique()} span(s) with a FAIL**, "
                 f"**{len(result.excel_only)} drawing beam(s) not in Prokon**, "
                 f"**{len(result.pdf_only)} Prokon beam(s) not on the drawing**. "
                 "Check each one against the drawing (page shown); the drawing may be pre-update.")
 
+    def span_checks(mark):
+        span_rows = df_all[df_all["Beam Mark"] == mark]        # all three positions, not only the FAIL ones
+        return span_rows[RESULT_COLUMNS].values.tolist() if len(span_rows) == 3 else None
+
+    if typos:
+        st.markdown("#### ⚠ Possible typos on the drawing")
+        st.caption("A bar count here cannot fit the beam width even in two layers. The checker still uses the value "
+                   "as written, so the result below may be a false OK or a false FAIL. Highlight only: OK/FAIL is "
+                   "not changed; check the drawing.")
+        for mark, row, issues in typos:
+            with st.container(border=True):
+                show_beam_table(row, span_checks(mark), f"⚠ possible typo · {mark}",
+                                "; ".join(plausibility.describe(i) for i in issues))
+
+    if not fails.empty:
+        st.markdown("#### ❌ Spans with a FAIL")
     for mark in fails["Beam Mark"].unique():
-        span_rows = df_all[df_all["Beam Mark"] == mark]       # all three positions, not only the FAIL ones
         row = table_row_for(table, str(mark))
+        checks = span_checks(mark)
+        title = f"❌ {mark}" + (" · ⚠ possible typo" if mark in typo_marks else "")
         with st.container(border=True):
-            if row is None or len(span_rows) != 3:
-                st.markdown(f"**❌ {mark}**")
-                st.dataframe(span_rows, hide_index=True, width="stretch")
+            if row is None or checks is None:
+                st.markdown(f"**{title}**")
+                st.dataframe(df_all[df_all["Beam Mark"] == mark], hide_index=True, width="stretch")
             else:
-                show_beam_table(row, span_rows[RESULT_COLUMNS].values.tolist(), f"❌ {mark}")
+                show_beam_table(row, checks, title)
 
     if result.excel_only:
         st.markdown("#### On the drawing, not in the Prokon report")
         for base in result.excel_only:
             for m in table["Beam mark"].fillna("").astype(str):
-                if m.strip() and drawing_reader.normalize_str(drawing_reader.clean_suffix(m)[0]) == \
-                        drawing_reader.normalize_str(base):
+                if m.strip() and drawing_reader.normalize_str(drawing_reader.clean_suffix(m)[0]) ==                         drawing_reader.normalize_str(base):
                     with st.container(border=True):
                         show_beam_table(table_row_for(table, m), None, m, "not in the Prokon report")
     if result.pdf_only:
         st.markdown("#### In the Prokon report, not found on the drawing")
         st.write(", ".join(result.pdf_only))
-    if fails.empty and not result.excel_only and not result.pdf_only:
-        st.success("No FAILs and no unmatched beams. Still spot-check a few beams against the drawing.")
+    if fails.empty and not typos and not result.excel_only and not result.pdf_only:
+        st.success("No possible typos, no FAILs and no unmatched beams. Still spot-check a few beams against the drawing.")
 
 
 def unmatched_table(result):
