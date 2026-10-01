@@ -331,3 +331,67 @@ def test_real_dxf_reads_a_schedule():
     assert reading.tables, f"no schedule found; headers found: {reading.found_headers}"
     assert sum(len(t.table.records) for t in reading.tables) > 0
 
+
+# ------------------------------------------------------------------ into the review table
+
+def test_cad_rows_feed_the_review_table_like_text_layer_rows():
+    import zipfile
+
+    from beam_checker import drawing_reader as dr
+
+    doc = new_doc()
+    sheet = doc.layouts.new("Schedule sheet")
+    rows = [list(ROWS[0]), list(ROWS[1]), list(ROWS[2])]
+    add_schedule(sheet, rows)
+    reading = cr.read_dxf(to_bytes(doc))
+    ex = dr.read_cad(reading.tables)
+    t = ex.table
+    assert ex.method == dr.READ_CAD and ex.requests == 0
+    assert set(t["Read from"]) == {"CAD text"} and set(t["Page"]) == {3}
+    assert dr.tick_status(t) == (0, 0) and dr.ready_to_compare(t)          # ticks optional, as for the text layer
+    assert sorted(t["Beam mark"]) == ["B101-1", "B101-2", "B102a"]
+    assert t.loc[t["Beam mark"] == "B102a", "Size"].item() == "200x225/175"
+    # layout name and coordinates are position data only: not in the table, the notes or the Excel download
+    pos = ex.boxes[t.loc[t["Beam mark"] == "B101-1", "Row ID"].item()]
+    assert pos["layout"] == "Schedule sheet" and pos["layout_no"] == 3 and {"x", "y"} <= set(pos)
+    assert "Schedule sheet" not in t.to_csv()
+    xlsx = zipfile.ZipFile(io.BytesIO(dr.table_to_type2_excel(t)))
+    assert not any(b"Schedule sheet" in xlsx.read(n) for n in xlsx.namelist())
+    # the comparison input and the assistant summary work as for the text layer
+    assert len(dr.table_to_records(t)) == 3
+    summary = dr.schedule_summary(t, ex.method, [], [], 3, 3)
+    assert summary["ai_used_for_reading"] is False and summary["page_means"] == "layout number in the DXF file"
+
+
+def test_formatting_flag_puts_the_row_on_the_review_list():
+    from beam_checker import drawing_reader as dr
+
+    doc = new_doc()
+    rows = [list(ROWS[0]), list(ROWS[1])]
+    rows[1][2] = "%%u3H16"
+    add_schedule(doc.modelspace(), rows)
+    t = dr.read_cad(cr.read_dxf(to_bytes(doc)).tables).table
+    flagged = t[t["Beam mark"] == "B101-2"].iloc[0]
+    assert flagged["Flags"] == "formatting_removed" and flagged["Review"] == "⚠ check"
+    assert t.iloc[0]["Beam mark"] == "B101-2"                              # rows to check come first
+
+
+def test_font_only_flag_is_shown_but_not_highlighted():
+    from beam_checker import drawing_reader as dr
+
+    doc = new_doc()
+    rows = [list(ROWS[0]), list(ROWS[1])]
+    rows[1][1] = "200x450"
+    add_schedule(doc.modelspace(), rows)
+    reading = cr.read_dxf(to_bytes(doc))
+    reading.tables[0].table.records[1]["flags"] = [cr.FONT_FLAG]
+    t = dr.read_cad(reading.tables).table
+    row = t[t["Beam mark"] == "B101-2"].iloc[0]
+    assert row["Flags"] == "font_codes_removed" and row["Review"] == ""
+
+
+def test_cad_only_flag_is_not_offered_to_the_ai():
+    from beam_checker import drawing_reader as dr
+
+    allowed = dr.RECORD_SCHEMA["properties"]["flags"]["items"]["enum"]
+    assert "formatting_removed" not in allowed and "possible_typo" in allowed

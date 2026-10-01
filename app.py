@@ -14,7 +14,7 @@ import streamlit as st
 
 from beam_checker import EXCEL_FORMATS, RESULT_COLUMNS, run_comparison, run_comparison_records
 from beam_checker.checker import NOT_CHECKED, NOTE_COLUMN, check_span, match_span
-from beam_checker import access, agent, drawing_reader, plausibility
+from beam_checker import access, agent, cad_reader, drawing_reader, plausibility, text_layer
 from beam_checker.prompts import FLAG_DESCRIPTIONS
 
 st.set_page_config(page_title="Beam Rebar Checker", page_icon="🏗️", layout="wide")
@@ -229,7 +229,7 @@ def render_assistant(result, provider, api_key, model, key_mode, limits, secrets
 
 
 EXCEL_MODE = "Excel schedule"
-DRAWING_MODE = "Drawing (PDF or image)"
+DRAWING_MODE = "Drawing (PDF, DXF or image)"
 RUN_LABEL = "▶ Run comparison (all beams)"
 
 
@@ -240,6 +240,11 @@ def fingerprint_df(df):
 @st.cache_data(show_spinner="Reading the drawing...", max_entries=4)
 def load_drawing_pages(files, max_pages):
     return drawing_reader.load_pages(list(files), max_pages)
+
+
+@st.cache_data(show_spinner="Reading the DXF (no AI)...", max_entries=4)
+def read_cad_file(data, max_mb, max_entities, timeout_s):
+    return cad_reader.read_dxf(data, cad_reader.CadLimits(max_mb, max_entities, timeout_s))
 
 
 @st.cache_data(show_spinner="Reading the Prokon report...", max_entries=4)
@@ -262,11 +267,18 @@ def render_drawing_input(provider, api_key, key_mode, model, limits, extra_rules
 
     Returns {"extraction", "fp", "files", "pages"} once a reading exists, else None.
     """
-    uploads = st.file_uploader("Beam schedule drawing (.pdf, .png, .jpg)", type=["pdf", "png", "jpg", "jpeg"],
-                               accept_multiple_files=True, key="drawing_files")
+    uploads = st.file_uploader("Beam schedule drawing (.pdf, .dxf, .png, .jpg)",
+                               type=["pdf", "dxf", "dwg", "png", "jpg", "jpeg"], accept_multiple_files=True,
+                               key="drawing_files",
+                               help="DXF: export only the schedule sheet. DWG is not read: save it as DXF first.")
     if not uploads:
         return None
     files = tuple((u.name, u.getvalue()) for u in uploads)
+    if any(name.lower().endswith((".dxf", ".dwg")) for name, _ in files):
+        if len(files) > 1:
+            st.error("Upload one CAD file on its own (a DXF), not together with PDFs, images or other CAD files.")
+            return None
+        return render_cad_input(files, limits)
     try:
         n_pages = drawing_reader.count_pages(files)
     except Exception as e:
@@ -359,11 +371,58 @@ def render_drawing_input(provider, api_key, key_mode, model, limits, extra_rules
     return {"extraction": extraction, "fp": fp, "files": files, "pages": pages}
 
 
+def render_cad_input(files, limits):
+    """Drawing mode with a DXF: read its text (no AI) and let the user choose the schedule table(s)."""
+    st.info("🔒 **CAD files:** upload the schedule sheet only (export it on its own as DXF). A whole-project DXF "
+            "holds much more than the schedule; for confidential drawings run the app on your own PC (README: "
+            "*Running locally for CAD files*). The app stores nothing.")
+    data = files[0][1]
+    try:
+        reading = read_cad_file(data, limits["dxf_mb"], limits["dxf_entities"], limits["dxf_timeout"])
+    except cad_reader.CadReadError as e:
+        st.error(f"❌ {e}")
+        return None
+    for warning in reading.warnings:
+        st.warning(warning)
+    if not reading.tables:
+        found = ", ".join(f"'{h}'" for h in reading.found_headers) or "none"
+        st.error(f"No beam schedule table found in the DXF ({len(reading.layouts)} layout(s) checked). "
+                 f"Header names found: {found}. Expected a 'Mark' column with the beam marks below it, and headers "
+                 f"such as: {', '.join(text_layer.EXPECTED_HEADERS)}.")
+        return None
+
+    best = reading.tables.index(reading.best())
+    if len(reading.tables) > 1:
+        chosen = st.multiselect(
+            "Schedule tables to read", list(range(len(reading.tables))), default=[best],
+            format_func=lambda i: reading.tables[i].label(), key=f"cad_tables_{hashlib.sha256(data).hexdigest()}",
+            help="Several schedule tables were found. The best header match is selected; add the others if the "
+                 "schedule continues in them.")
+        if not chosen:
+            st.info("Choose at least one schedule table.")
+            return None
+    else:
+        chosen = [best]
+    chosen = sorted(chosen)
+    n_rows = sum(len(reading.tables[i].table.records) for i in chosen)
+    st.success(f"📐 **{n_rows} rows found** in the DXF ({len(chosen)} of {len(reading.tables)} table(s)), "
+               "**cost $0**. Read exactly as typed; no AI involved, nothing sent.")
+    fp = drawing_reader.files_fingerprint(files, "cad:" + ",".join(map(str, chosen)))
+    extractions = st.session_state.setdefault("drawing_extractions", {})
+    if fp not in extractions:
+        extractions[fp] = drawing_reader.read_cad([reading.tables[i] for i in chosen])
+    return {"extraction": extractions[fp], "fp": fp, "files": files, "pages": []}
+
+
 def render_review(state, prokon_up, limits):
     """Step 2 in drawing mode: coverage, review table, per-beam check, Excel download, run."""
     extraction, fp, files, pages = state["extraction"], state["fp"], state["files"], state["pages"]
     st.subheader("2. Review drawing schedule")
-    if extraction.method == drawing_reader.READ_TEXT:
+    if extraction.method == drawing_reader.READ_CAD:
+        st.caption("Read from the DXF's text: the values are the drawing's own text, copied exactly (Page = layout "
+                   "number in the DXF). The drawing may be older than the calculation; the comparison will show "
+                   "the differences.")
+    elif extraction.method == drawing_reader.READ_TEXT:
         st.caption("Read from the PDF text layer: the values are the drawing's own text, copied exactly. "
                    "The drawing may be older than the calculation; the comparison will show the differences.")
     else:
@@ -371,8 +430,9 @@ def render_review(state, prokon_up, limits):
                    "especially the highlighted ones, and correct the table.")
     for page_no, err in extraction.page_errors.items():
         st.error(f"Page {page_no}: {err}")
+    where = "Layout" if extraction.method == drawing_reader.READ_CAD else "Page"
     for page_no, note in extraction.page_notes.items():
-        st.info(f"Page {page_no}: {note}")
+        st.info(f"{where} {page_no}: {note}")
 
     coverage_slot = st.container()
     # Row highlights come from the table as last edited (Prokon concerns, duplicate marks); when an edit changes
@@ -404,7 +464,7 @@ def render_review(state, prokon_up, limits):
         width="stretch", height=440,
         column_config={
             "Reviewed": st.column_config.CheckboxColumn(
-                "Reviewed ✓", help="Required for rows read by AI vision; optional for PDF text-layer rows"),
+                "Reviewed ✓", help="Required for rows read by AI vision; optional for PDF text-layer and CAD rows"),
             **{c: st.column_config.Column(disabled=True) for c in drawing_reader.LOCKED_COLUMNS},
             "Review": st.column_config.Column(disabled=True, width=140),
             "Confidence": st.column_config.SelectboxColumn(options=["high", "medium", "low"], width="small"),
@@ -423,7 +483,7 @@ def render_review(state, prokon_up, limits):
         st.caption(f"**Why ticks:** AI vision can misread a value, so each AI-read row must be ticked after you check "
                    f"it against the drawing (**{n_done} of {n_required} ticked**). **Tick all unflagged rows** ticks "
                    "the rows without a concern; each highlighted row needs its own tick. Then confirm the whole "
-                   "table once, below. Text-layer rows are the drawing's own text; ticking them is optional.")
+                   "table once, below. Text-layer and CAD rows are the drawing's own text; ticking them is optional.")
     else:
         st.caption("**Why ticks:** they are an optional checklist here. These rows are the drawing's own text, copied "
                    "exactly; only rows read by AI vision must be ticked.")
@@ -744,6 +804,9 @@ with st.sidebar:
         "drawing_session": int_setting("MAX_DRAWING_CALLS_PER_SESSION", env, 40),
         "drawing_max_tokens": int_setting("DRAWING_MAX_OUTPUT_TOKENS", env, drawing_reader.DEFAULT_MAX_OUTPUT_TOKENS),
         "max_pages": int_setting("MAX_DRAWING_PAGES", env, drawing_reader.DEFAULT_MAX_PAGES),
+        "dxf_mb": int_setting("MAX_DXF_MB", env, cad_reader.DEFAULT_MAX_MB),
+        "dxf_entities": int_setting("MAX_DXF_ENTITIES", env, cad_reader.DEFAULT_MAX_ENTITIES),
+        "dxf_timeout": int_setting("DXF_TIMEOUT_SECONDS", env, cad_reader.DEFAULT_TIMEOUT_S),
     }
     extra_rules = get_setting("EXTRA_READING_RULES", env)[0]  # private; never displayed
     calls_left_slot = st.empty()  # filled at the end of the script, after any AI calls this run
@@ -766,7 +829,7 @@ with st.sidebar:
         ai_model = st.text_input("Model", value=env_model, help="Any GLM model name that supports function calling.")
     if st.session_state.get("schedule_source") == DRAWING_MODE:
         st.caption("The assistant sees only the comparison results rows and a summary of how each schedule row "
-                   "was read (method, page, flags). With the PDF text layer, nothing from the drawing is sent to "
+                   "was read (method, page, flags). With the PDF text layer or a DXF, nothing from the drawing is sent to "
                    "any AI provider; only the AI vision option sends the drawing pages to Anthropic. "
                    "The app stores nothing.")
     else:
@@ -783,7 +846,7 @@ with st.container(border=True):
     st.subheader("1. Input files")
     source = st.radio("Schedule source", [EXCEL_MODE, DRAWING_MODE], horizontal=True, key="schedule_source",
                       help="Excel mode needs no API key. Drawing mode reads the schedule from the PDF text layer "
-                           "when it can (free), otherwise with Claude vision.")
+                           "or a DXF (free), otherwise with Claude vision (scans and images).")
     col_s, col_p = st.columns(2)
     with col_p:
         pdf_up = st.file_uploader("Prokon report (.pdf)", type=["pdf"], key="prokon_pdf")
@@ -859,8 +922,9 @@ if result is not None:
         df_all.insert(0, "Read from", [read_from.get(str(m).strip(), "") for m in df_all["Beam Mark"]])
         df_all.insert(0, "Schedule source", drawing_reader.SOURCE_LABEL)
         n_found, n_total = len(result.pdf_matched_bases), len(result.pdf_beam_names)
-        how = ("read from the PDF text layer, **no AI was involved in reading the drawing**"
-               if ctx.get("method") == drawing_reader.READ_TEXT else "read with **AI vision** and reviewed by you")
+        how = {drawing_reader.READ_TEXT: "read from the PDF text layer, **no AI was involved in reading the drawing**",
+               drawing_reader.READ_CAD: "read from the DXF's CAD text, **no AI was involved in reading the drawing**",
+               }.get(ctx.get("method"), "read with **AI vision** and reviewed by you")
         st.info(f"📐 **{drawing_reader.SOURCE_LABEL}** · coverage: found **{n_found} of {n_total}** Prokon beam marks "
                 f"on the drawing · schedule {how}. The drawing may be pre-update: FAILs and unmatched beams are "
                 "discrepancies to double-check.")

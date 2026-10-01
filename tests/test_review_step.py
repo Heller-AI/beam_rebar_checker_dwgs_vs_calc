@@ -79,7 +79,7 @@ def drawing_page(extraction, prokon=True):
             mock.patch.object(dr, "read_text_layer", return_value=extraction), \
             mock.patch.object(beam_checker, "extract_all_beams_from_pdf", return_value=BEAMS):
         at = AppTest.from_file("../app.py", default_timeout=60)
-        at.session_state["schedule_source"] = "Drawing (PDF or image)"
+        at.session_state["schedule_source"] = "Drawing (PDF, DXF or image)"
         at.run()
         yield at
 

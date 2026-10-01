@@ -9,6 +9,7 @@ No Streamlit code here. The flow is:
 
 If a PDF page keeps the schedule as positioned text (typical for CAD exports), it is read
 directly from the text layer instead (text_layer.py): exact, free, and nothing is sent anywhere.
+A CAD drawing saved as DXF is read the same way (cad_reader.py, then read_cad below).
 
 The model never decides PASS/FAIL: it only transcribes the schedule, every string is checked
 with parsers.py, and the comparison runs only after the user has reviewed and ticked every row.
@@ -62,6 +63,9 @@ DRAWING_REMARKS = ("From drawing T1 / S1", "From drawing B1-B2 / S2", "From draw
 SOURCE_LABEL = "AI-read drawing vs Prokon"
 READ_TEXT = "PDF text layer"
 READ_VISION = "AI vision"
+READ_CAD = "CAD text"
+NO_AI_METHODS = (READ_TEXT, READ_CAD)   # the drawing's own text, copied exactly
+CAD_ONLY_FLAGS = {"formatting_removed", "font_codes_removed"}  # set by the DXF reader, never offered to the AI
 
 BAR_FIELDS = ("T1", "T2", "T3", "B1", "B2", "B3")
 STIRRUP_FIELDS = ("S1", "S2", "S3")
@@ -278,7 +282,8 @@ RECORD_SCHEMA = {
         **{f: _string(f"Stirrups zone {f} as full notation, e.g. 2H10-150") for f in STIRRUP_FIELDS},
         "remark": _string("Remark as written"),
         "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-        "flags": {"type": "array", "items": {"type": "string", "enum": list(FLAG_DESCRIPTIONS)}},
+        "flags": {"type": "array",
+                  "items": {"type": "string", "enum": [f for f in FLAG_DESCRIPTIONS if f not in CAD_ONLY_FLAGS]}},
         "source_note": _string("Where the row is on the page"),
         "row_box": {"type": "array", "items": {"type": "number"},
                     "description": "Approximate box of this row on the page, in percent of the overview image: "
@@ -557,9 +562,11 @@ def _add_checks(rows):
 
 
 # Flags that are a genuine concern and highlight the row. The others (arrows read as written, stirrup legs not
-# stated, cantilever end, tapered size...) stay visible in the Flags column but do not highlight on their own,
-# so the highlight keeps its meaning on a long AI-read table.
-CONCERN_FLAGS = {"notation_invalid", "unreadable", "possible_typo", "conflict", "continuity_mismatch"}
+# stated, cantilever end, tapered size, CAD font codes removed...) stay visible in the Flags column but do not
+# highlight on their own, so the highlight keeps its meaning on a long AI-read table. formatting_removed: a CAD
+# cell lost underline / strike-through or stacked text, which can carry meaning.
+CONCERN_FLAGS = {"notation_invalid", "unreadable", "possible_typo", "conflict", "continuity_mismatch",
+                 "formatting_removed"}
 
 
 def needs_review(confidence, flags_text):
@@ -583,7 +590,8 @@ def prokon_concerns(table, prokon_beams):
 def build_table(page_records):
     """[(page number, record dict[, meta])] -> (review table, boxes). Rows needing review come first.
 
-    meta: {"read": READ_TEXT or READ_VISION, "box": row box in px or None, "header": header box in px or None}
+    meta: {"read": READ_TEXT / READ_CAD / READ_VISION, "box": row box in px or None, "header": header box in px or None,
+           "position": CAD position {"layout_no", "layout", "x", "y"} (optional)}
     """
     items = []
     for item in page_records:
@@ -595,6 +603,8 @@ def build_table(page_records):
         row_id = f"R{i}"
         if r["_meta"]["box"]:
             boxes[row_id] = {"page": r["_page"], "row": r["_meta"]["box"], "header": r["_meta"]["header"]}
+        elif r["_meta"].get("position"):
+            boxes[row_id] = {"page": r["_page"], **r["_meta"]["position"]}
         out.append({
             "Reviewed": False, "Review": "", "Page": r["_page"], "Read from": r["_meta"]["read"],
             "Beam mark": r["beam_mark"], "Size": r["size"], **{f: r[f] for f in BAR_FIELDS},
@@ -712,6 +722,28 @@ def read_text_layer(pages):
         return None
     table, boxes = build_table(page_records)
     return DrawingExtraction(table, notes, {}, 0, boxes, READ_TEXT)
+
+
+def read_cad(cad_tables):
+    """Review table from the chosen DXF schedule tables (cad_reader.CadTable; no AI). None if there are no rows.
+
+    Page is the layout number; the layout name and drawing coordinates of each row are kept in `boxes`,
+    not in the table or the Excel download (layout names often carry drawing numbers).
+    """
+    page_records, notes = [], {}
+    for t in cad_tables:
+        for rec in t.table.records:
+            page_records.append((t.layout_no, rec, {"read": READ_CAD, "position": t.position(rec)}))
+        msgs = list(t.table.notes)
+        if t.table.unmapped_headers:
+            msgs.append("columns not used: " + ", ".join(t.table.unmapped_headers))
+        if msgs:
+            notes[t.layout_no] = "; ".join(filter(None, [notes.get(t.layout_no), f"table {t.table_no}: "
+                                                         + "; ".join(msgs)]))
+    if not page_records:
+        return None
+    table, boxes = build_table(page_records)
+    return DrawingExtraction(table, notes, {}, 0, boxes, READ_CAD)
 
 
 def text_layer_summary(pages):
@@ -933,7 +965,8 @@ def schedule_summary(table, method, pdf_only, excel_only, n_prokon, n_found, not
     return {
         "schedule_source": "drawing",
         "reading_method": method,
-        "ai_used_for_reading": method != READ_TEXT,
+        "ai_used_for_reading": method not in NO_AI_METHODS,
+        **({"page_means": "layout number in the DXF file"} if method == READ_CAD else {}),
         "note": "The drawing may be older than the calculation; differences are discrepancies to double-check.",
         "coverage": f"found {n_found} of {n_prokon} Prokon beam marks on the drawing",
         "prokon_beams_not_on_drawing": list(pdf_only),

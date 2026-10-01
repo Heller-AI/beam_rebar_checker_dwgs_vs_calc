@@ -46,6 +46,9 @@ FLAG_DESCRIPTIONS = {
     "notation_invalid": "A bar or stirrup string could not be parsed",
     "conflict": "The same beam mark appears more than once with different values",
     "continuity_mismatch": "Support bars of consecutive spans (-1/-2) do not match",
+    "formatting_removed": "CAD text had underline/overline/strike-through or stacked text (e.g. a fraction) that "
+                          "was removed; check the cell against the drawing",
+    "font_codes_removed": "CAD text had only font, height or colour codes, which were removed (shown, not highlighted)",
     "tapered_size": "Size has a varying depth (e.g. 200x225/175)",
     "possible_typo": "A bar count cannot fit the beam width even in two layers (e.g. 33H25 in a 300 mm beam); "
                      "probably a typo on the drawing. Highlight only: OK/FAIL is not changed",

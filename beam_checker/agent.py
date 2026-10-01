@@ -238,7 +238,8 @@ def _suggest_stirrups(required_asv_sv, max_spacing_mm, beam_width_mm):
 
 SCHEDULE_TOOL = {
     "name": "get_schedule_source",
-    "description": "How the provided-steel schedule was obtained from the drawing (PDF text layer or AI vision), "
+    "description": "How the provided-steel schedule was obtained from the drawing (PDF text layer, CAD text from a "
+                   "DXF file, or AI vision), "
                    "coverage of Prokon beam marks, beams only on the drawing or only in Prokon, the page of each "
                    "row, the rows that were uncertain or flagged during review, and possible typos (bar counts "
                    "that cannot fit the beam width).",
