@@ -623,35 +623,29 @@ def text_layer_summary(pages):
     return {p.number: sum(len(t.records) for t in p.tables) for p in pages if p.tables}
 
 
-def crop_row(page, box, header=None, pad=6, max_width=1600):
-    """The drawing region of one schedule row, with the table header above it if known.
+POSITIONS = (("Left", "T1", "B1", "S1"), ("Middle", "T2", "B2", "S2"), ("Right", "T3", "B3", "S3"))
 
-    Kept at full resolution so the text stays legible; a wide row is wrapped into stacked parts
-    of at most max_width pixels (header and row stay aligned in each part).
+
+def beam_detail(row, checks=None):
+    """One beam span as a small readable table: Left / Middle / Right with the drawing's top bars,
+    bottom bars and stirrups, and (if `checks` are given: the checker's 3 result rows for the span)
+    the Prokon requirement, what the checker counted as provided, and OK/FAIL.
+
+    The checker compares top bars at the supports and bottom bars at mid-span; "Checked" says which.
     """
-    w, h = page.image.size
-
-    def grab(b):
-        x0, y0, x1, y1 = b
-        return page.image.crop((max(0, int(x0) - pad), max(0, int(y0) - pad), min(w, int(x1) + pad), min(h, int(y1) + pad)))
-
-    row = grab(box)
-    if header:
-        head = grab((box[0], header[1], box[2], header[3]))   # same x-range as the row
-        combined = Image.new("L", (row.width, head.height + 4 + row.height), 160)
-        combined.paste(head, (0, 0))
-        combined.paste(row, (0, head.height + 4))
-    else:
-        combined = row
-    if combined.width <= max_width:
-        return combined
-    n = math.ceil(combined.width / max_width)
-    part_w = math.ceil(combined.width / n)
-    parts = [combined.crop((i * part_w, 0, min(combined.width, (i + 1) * part_w), combined.height)) for i in range(n)]
-    out = Image.new("L", (part_w, n * combined.height + (n - 1) * 14), 255)
-    for i, part in enumerate(parts):
-        out.paste(part, (0, i * (combined.height + 14)))
-    return out
+    out = []
+    for i, (pos, t, b, st) in enumerate(POSITIONS):
+        rec = {"Position": pos, "Top (drawing)": _cell(row[t]), "Bottom (drawing)": _cell(row[b]),
+               "Stirrups (drawing)": _cell(row[st])}
+        if checks is not None:
+            c = checks[i]
+            rec.update({
+                "Checked": "bottom bars" if pos == "Middle" else "top bars",
+                "As required (mm²)": c[2], "As provided (mm²)": c[4], "Flexure": c[6],
+                "Asv/sv required": c[7], "Asv/sv provided": c[9], "Shear": c[11], "Result": c[12],
+            })
+        out.append(rec)
+    return pd.DataFrame(out)
 
 
 def coverage(table, prokon_marks):

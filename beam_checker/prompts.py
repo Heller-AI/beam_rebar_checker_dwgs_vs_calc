@@ -92,7 +92,7 @@ HOW TO FINISH
   and no assumption; medium = legible but one assumption made; low = uncertain or unreadable.
 - source_note: where the row is (e.g. "schedule table 2, row 5").
 - row_box: the row's approximate box on the page in percent of the overview image,
-  [left, top, right, bottom]; [] if unsure. It is used to show the reviewer a crop of the row.
+  [left, top, right, bottom]; [] if unsure. It records where the row is on the page.
 - Extract only beam schedule rows. Ignore title blocks, general notes, legends, typical details
   and plans. If the page has no beam schedule, submit an empty list and say so in page_note."""
 

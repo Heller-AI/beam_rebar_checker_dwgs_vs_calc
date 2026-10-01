@@ -12,7 +12,8 @@ import anthropic
 import pandas as pd
 import streamlit as st
 
-from beam_checker import EXCEL_FORMATS, run_comparison, run_comparison_records
+from beam_checker import EXCEL_FORMATS, RESULT_COLUMNS, run_comparison, run_comparison_records
+from beam_checker.checker import check_span, span_requirements
 from beam_checker import access, agent, drawing_reader
 from beam_checker.prompts import FLAG_DESCRIPTIONS
 
@@ -167,9 +168,13 @@ def load_drawing_pages(files, max_pages):
 
 
 @st.cache_data(show_spinner="Reading the Prokon report...", max_entries=4)
-def prokon_beam_marks(pdf_bytes):
+def prokon_beams(pdf_bytes):
     from beam_checker import extract_all_beams_from_pdf
-    return sorted(extract_all_beams_from_pdf(io.BytesIO(pdf_bytes)))
+    return extract_all_beams_from_pdf(io.BytesIO(pdf_bytes))
+
+
+def prokon_beam_marks(pdf_bytes):
+    return sorted(prokon_beams(pdf_bytes))
 
 
 TEXT_METHOD = "PDF text layer (free, exact)"
@@ -260,7 +265,7 @@ def render_drawing_input(provider, api_key, key_mode, model, limits, extra_rules
 
 
 def render_review(state, prokon_up, limits):
-    """Step 2 in drawing mode: coverage, review table with per-row ticks, crop viewer, Excel download, run."""
+    """Step 2 in drawing mode: coverage, review table, per-beam check, Excel download, run."""
     extraction, fp, files, pages = state["extraction"], state["fp"], state["files"], state["pages"]
     st.subheader("2. Review drawing schedule")
     if extraction.method == drawing_reader.READ_TEXT:
@@ -308,15 +313,12 @@ def render_review(state, prokon_up, limits):
         else:
             st.info("Upload the Prokon report to see the coverage (found X of Y Prokon beam marks on the drawing).")
 
-    tools_left, tools_right = st.columns([3, 2])
-    with tools_left:
-        marks = [m for m in edited["Beam mark"].fillna("").astype(str) if m.strip()]
-        if extraction.boxes and marks:
-            pick = st.selectbox("Show the drawing crop for a row", ["(choose a beam mark)"] + marks, key=f"crop_pick_{fp}")
-            if pick != "(choose a beam mark)":
-                show_row_crop(edited, extraction.boxes, pages, pick)
-    with tools_right:
-        st.download_button(
+    marks = [m for m in edited["Beam mark"].fillna("").astype(str) if m.strip()]
+    if marks:
+        pick = st.selectbox("Check one beam against Prokon", ["(choose a beam mark)"] + marks, key=f"beam_pick_{fp}")
+        if pick != "(choose a beam mark)":
+            show_beam_check(edited, pick, prokon_up)
+    st.download_button(
             "⬇ Download schedule as Excel (Type 2 layout)", drawing_reader.table_to_type2_excel(edited),
             file_name="beam_schedule_from_drawing.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -361,64 +363,69 @@ def render_review(state, prokon_up, limits):
     st.session_state["current_table"] = fingerprint_df(edited)
 
 
-def show_row_crop(table, boxes, pages, mark, caption_extra=""):
-    """Show the drawing region of the table row with this beam mark (if its position is known)."""
+def table_row_for(table, mark):
     rows = table[table["Beam mark"].fillna("").astype(str).str.strip() == mark.strip()]
-    if rows.empty:
-        st.caption(f"{mark}: not in the reviewed table.")
-        return
-    row = rows.iloc[0]
-    box = boxes.get(str(row["Row ID"]))
-    if not box:
-        st.caption(f"{mark}: no position on the drawing is known for this row (added by hand, or not given by the AI).")
-        return
-    page = next((p for p in pages if p.number == box["page"]), None)
-    if page is None:
-        return
-    crops = st.session_state.setdefault("crop_cache", {})
-    key = (id(page), str(row["Row ID"]))
-    if key not in crops:
-        buf = io.BytesIO()
-        drawing_reader.crop_row(page, box["row"], box["header"]).save(buf, format="PNG")
-        crops[key] = buf.getvalue()
-    st.image(crops[key], caption=f"Page {box['page']} · {mark} · read from {row['Read from']}{caption_extra}",
-             width="stretch")
+    return None if rows.empty else rows.iloc[0]
 
 
-FINDING_COLUMNS = ["Position / Location", "Req. As (mm²)", "Provided Bars", "Prov. As (mm²)", "Flex Status",
-                   "Req. Asv/sv", "Provided Stirrup", "Prov. Asv/sv", "Shear Status"]
+def show_beam_table(row, checks, title, note=""):
+    """A full-width, readable table for one beam span (Left / Middle / Right)."""
+    page = _page_text(row)
+    st.markdown(f"**{title}** · {page} · read from {row['Read from'] or 'manual entry'}" + (f" · {note}" if note else ""))
+    st.dataframe(drawing_reader.beam_detail(row, checks), hide_index=True, width="stretch")
+
+
+def _page_text(row):
+    page = str(row["Page"]).strip() if row["Page"] is not None else ""
+    return f"page {page}" if page and page.lower() != "nan" else "page not known"
+
+
+def show_beam_check(table, mark, prokon_up):
+    """Review step: the selected beam's drawing values next to the Prokon requirement and OK/FAIL."""
+    row = table_row_for(table, mark)
+    if row is None:
+        return
+    if not prokon_up:
+        show_beam_table(row, None, mark, "upload the Prokon report to see the requirement")
+        return
+    beams = prokon_beams(prokon_up.getvalue())
+    matched, req = span_requirements(mark, beams)
+    if not matched:
+        show_beam_table(row, None, mark, "not in the Prokon report")
+        return
+    checks = check_span(drawing_reader.table_to_records(table[table.index == row.name])[0], req)
+    show_beam_table(row, checks, mark, f"Prokon beam {matched}")
 
 
 def render_findings(df_all, result, ctx):
-    """Every FAIL span and every drawing-only beam, each next to its drawing crop and page (local, no AI)."""
+    """Every FAIL span and every drawing-only beam as a small readable table (no AI, no images)."""
     if not ctx:
         return
-    pages = load_drawing_pages(ctx["files"], ctx["max_pages"])
+    table = ctx["table"]
     fails = df_all[df_all["Overall Status"] == "FAIL"]
     st.markdown(f"**{fails['Beam Mark'].nunique()} span(s) with a FAIL**, "
                 f"**{len(result.excel_only)} drawing beam(s) not in Prokon**, "
                 f"**{len(result.pdf_only)} Prokon beam(s) not on the drawing**. "
-                "Compare each one with the drawing crop; the drawing may be pre-update. "
-                "Crops are cut from the uploaded drawing on this server; no AI is involved.")
+                "Check each one against the drawing (page shown); the drawing may be pre-update.")
 
-    for mark, rows in fails.groupby("Beam Mark", sort=False):
+    for mark in fails["Beam Mark"].unique():
+        span_rows = df_all[df_all["Beam Mark"] == mark]       # all three positions, not only the FAIL ones
+        row = table_row_for(table, str(mark))
         with st.container(border=True):
-            left, right = st.columns([3, 2])
-            with left:
-                show_row_crop(ctx["table"], ctx["boxes"], pages, str(mark))
-            with right:
-                st.markdown(f"#### ❌ {mark}")
-                st.dataframe(rows[FINDING_COLUMNS], hide_index=True, width="stretch")
+            if row is None or len(span_rows) != 3:
+                st.markdown(f"**❌ {mark}**")
+                st.dataframe(span_rows, hide_index=True, width="stretch")
+            else:
+                show_beam_table(row, span_rows[RESULT_COLUMNS].values.tolist(), f"❌ {mark}")
 
     if result.excel_only:
         st.markdown("#### On the drawing, not in the Prokon report")
         for base in result.excel_only:
-            marks = [m for m in ctx["table"]["Beam mark"].fillna("").astype(str)
-                     if m.strip() and drawing_reader.normalize_str(drawing_reader.clean_suffix(m)[0])
-                     == drawing_reader.normalize_str(base)]
-            for m in marks:
-                with st.container(border=True):
-                    show_row_crop(ctx["table"], ctx["boxes"], pages, m, " · not in the Prokon report")
+            for m in table["Beam mark"].fillna("").astype(str):
+                if m.strip() and drawing_reader.normalize_str(drawing_reader.clean_suffix(m)[0]) == \
+                        drawing_reader.normalize_str(base):
+                    with st.container(border=True):
+                        show_beam_table(table_row_for(table, m), None, m, "not in the Prokon report")
     if result.pdf_only:
         st.markdown("#### In the Prokon report, not found on the drawing")
         st.write(", ".join(result.pdf_only))

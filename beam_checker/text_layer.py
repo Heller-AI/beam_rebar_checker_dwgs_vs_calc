@@ -9,7 +9,7 @@ reading those words is exact and free, so it is tried before any vision call:
 3. Each mark's row is the band of words at the same height; each word goes to the nearest column.
 
 The result uses the same record fields as the AI extraction, plus the row and header boxes
-(in PDF points) so the app can show a crop of the drawing next to each finding.
+(in PDF points), so each row's position on the page is known.
 """
 
 import re

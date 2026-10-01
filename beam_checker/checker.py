@@ -225,6 +225,20 @@ def check_span(record, p_data, remarks=EXCEL_REMARKS):
     return rows
 
 
+def span_requirements(mark, pdf_beams):
+    """(matched Prokon base mark, required steel of the span) for a schedule mark, or (None, None)."""
+    base, span = clean_suffix(mark)
+    matched = _match_pdf_base(base, pdf_beams)
+    if not matched:
+        return None, None
+    spans_data = pdf_beams[matched]
+    # Look up the matching span number, fall back to span 1 / first available
+    target_span = span if span in spans_data else 1
+    if target_span not in spans_data and spans_data:
+        target_span = next(iter(spans_data))
+    return matched, spans_data.get(target_span, EMPTY_SPAN)
+
+
 def run_comparison(excel_file, pdf_file, sheet_name=None, fmt="Format 2", progress=None):
     """Full check from an Excel schedule. `progress(fraction, text)` receives 0..1 across the whole run."""
     return run_comparison_records(
@@ -260,20 +274,12 @@ def run_comparison_records(records, pdf_file, progress=None, remarks=EXCEL_REMAR
             continue
         result.excel_beam_names.add(excel_base)
 
-        matched = _match_pdf_base(excel_base, pdf_beams)
+        matched, p_data = span_requirements(record.mark, pdf_beams)
         if not matched:
             continue
 
         result.matched_count += 1
         result.pdf_matched_bases.add(matched)
-        spans_data = pdf_beams[matched]
-
-        # Look up the matching span number, fall back to span 1 / first available
-        target_span = excel_span if excel_span in spans_data else 1
-        if target_span not in spans_data and spans_data:
-            target_span = next(iter(spans_data))
-
-        p_data = spans_data.get(target_span, EMPTY_SPAN)
         result.rows.extend(check_span(record, p_data, remarks))
 
     report(1.0, "Done")

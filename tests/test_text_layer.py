@@ -85,7 +85,7 @@ def _page_with_tables():
     return dr.Page(1, "file 1, page 1", Image.new("L", (3000, 1500), 255), "", tables=tables, scale=2.0, height_pt=700)
 
 
-def test_text_layer_extraction_table_boxes_and_crops():
+def test_text_layer_extraction_table_and_row_positions():
     page = _page_with_tables()
     ex = dr.read_text_layer([page])
     assert ex.method == dr.READ_TEXT and ex.requests == 0
@@ -95,8 +95,6 @@ def test_text_layer_extraction_table_boxes_and_crops():
     b = ex.boxes[ex.table["Row ID"].iloc[0]]
     x0, y0, x1, y1 = b["row"]
     assert x0 < x1 and y0 < y1 and b["header"][3] <= y0 + 1      # header sits above its row (image y grows down)
-    crop = dr.crop_row(page, b["row"], b["header"], max_width=800)
-    assert crop.width <= 800
     assert dr.text_layer_summary([page]) == {1: 3}
     assert dr.read_text_layer([dr.Page(1, "x", Image.new("L", (10, 10)))]) is None
 
@@ -153,3 +151,31 @@ def test_schedule_summary_for_the_assistant():
     assert s["ai_used_for_reading"] is False and s["coverage"] == "found 2 of 3 Prokon beam marks on the drawing"
     assert [r["mark"] for r in s["rows_needing_extra_care"]] == ["B102a"]
     assert s["prokon_beams_not_on_drawing"] == ["B103"] and len(s["rows"]) == 3
+
+
+def test_beam_detail_table_shows_drawing_values_and_checks():
+    from unittest import mock
+
+    from beam_checker import checker
+
+    table = dr.read_text_layer([_page_with_tables()]).table
+    row = table[table["Beam mark"] == "B101-1"].iloc[0]
+    req = {"req_t1": 500.0, "req_b2": 300.0, "req_t3": 700.0, "req_asv_l": 0.5, "req_asv_m": 0.3, "req_asv_r": 0.5}
+    with mock.patch.object(checker, "extract_all_beams_from_pdf", return_value={"B101": {1: req}}):
+        res = checker.run_comparison_records(dr.table_to_records(table[table["Beam mark"] == "B101-1"]), "x.pdf")
+    detail = dr.beam_detail(row, res.rows)
+    assert list(detail["Position"]) == ["Left", "Middle", "Right"]
+    assert list(detail["Top (drawing)"]) == ["3H16", "2H16", "3H16"]
+    assert detail.loc[1, "Bottom (drawing)"] == "2H16+2H13" and detail.loc[1, "Checked"] == "bottom bars"
+    assert list(detail["Result"]) == [r[12] for r in res.rows] and detail.loc[2, "Result"] == "FAIL"
+    assert "Result" not in dr.beam_detail(row).columns            # drawing values only (no Prokon match)
+
+
+def test_span_requirements_matches_the_comparison():
+    from beam_checker import checker
+    req = {"req_t1": 1.0, "req_b2": 2.0, "req_t3": 3.0, "req_asv_l": 0.1, "req_asv_m": 0.2, "req_asv_r": 0.3}
+    beams = {"B101": {1: req, 2: {**req, "req_t1": 9.0}}}
+    assert checker.span_requirements("B101-2", beams) == ("B101", {**req, "req_t1": 9.0})
+    assert checker.span_requirements("b 101-7", beams) == ("B101", req)      # unknown span -> span 1
+    assert checker.span_requirements("B999", beams) == (None, None)
+
