@@ -186,3 +186,24 @@ def test_span_requirements_matches_the_comparison():
     assert checker.span_requirements("b 101-7", beams) == ("B101", req)      # unknown span -> span 1
     assert checker.span_requirements("B999", beams) == (None, None)
 
+
+
+def test_word_flags_are_carried_into_the_record():
+    words = synthetic_page_words()
+    for w in words:
+        if w.text == "2H16+2H13":
+            w.flags = ("formatting_removed",)
+    recs = tl.find_tables(words)[0].records
+    assert recs[0]["flags"] == ["formatting_removed"] and recs[0]["B2"] == "2H16+2H13"
+    assert recs[1]["flags"] == []
+
+
+def test_header_report_lists_the_headers_found():
+    # no table: the bar columns are labelled in a way the reader does not know
+    words = [w for w in synthetic_page_words() if w.text not in ("Top", "Bottom")]
+    assert tl.find_tables(words) == []
+    found = tl.header_report(words)
+    assert "Mark" in found and "Beam Size" in found and "Left" in found
+    # no "Mark" header at all: header-like texts are listed instead
+    found = tl.header_report([w for w in synthetic_page_words() if w.text != "Mark"])
+    assert "Mark" not in found and "Top" in found and "Stirrups" in found

@@ -31,6 +31,7 @@ class Word:
     y0: float
     x1: float
     y1: float
+    flags: tuple = ()        # cell flags carried into the record (e.g. "formatting_removed" from CAD text)
 
     @property
     def cx(self):
@@ -100,10 +101,45 @@ def _cluster(values, tol):
     return groups
 
 
+def _is_mark_header(w):
+    return w.text.strip().upper() in ("MARK", "BEAM MARK", "MARK NO", "MARK NO.")
+
+
+def _header_columns(header, text_h):
+    """Group header words into columns: [(label, field or None, centre x)], left to right."""
+    out = []
+    for g in _cluster([w.cx for w in header], 2.5 * text_h):
+        lo, hi = g[0] - 0.01, g[-1] + 0.01
+        parts = sorted((w for w in header if lo <= w.cx <= hi), key=lambda w: (-w.cy, w.x0))
+        label = " ".join(w.text for w in parts)
+        out.append((label, _field_for_header(label), statistics.mean(g)))
+    return out
+
+
+EXPECTED_HEADERS = ("Mark", "Size", "Top Left / Middle / Right (or T1-T3)", "Bottom Left / Middle / Right (or B1-B3)",
+                    "Stirrups Left / Middle / Right (or S1-S3)", "Side bar", "Stirrups Type", "Remark / Span Type")
+_HEADER_HINTS = ("MARK", "SIZE", "TOP", "BOT", "STIRRUP", "LINK", "SIDE", "REMARK", "SPAN")
+
+
+def header_report(words, limit=20):
+    """When no table is found: the header-like labels that were found, so the user sees what did not match.
+
+    Around each "Mark" word, the labels on its header rows; without a "Mark" word, texts that look like headers.
+    """
+    found = []
+    for anchor in [w for w in words if _is_mark_header(w)]:
+        text_h = max(anchor.y1 - anchor.y0, 1.0)
+        band = [w for w in words if anchor.y0 - 1.5 * text_h <= w.cy <= anchor.y1 + 3.5 * text_h]
+        found += [label for label, _, _ in _header_columns(band, text_h)]
+    if not found:
+        found = [w.text for w in words if any(h in w.text.upper() for h in _HEADER_HINTS) and len(w.text) <= 30]
+    return list(dict.fromkeys(found))[:limit]
+
+
 def find_tables(words):
     """Find schedule tables on one page. Returns [TextTable]; empty if there is none."""
     tables = []
-    for anchor in [w for w in words if w.text.strip().upper() in ("MARK", "BEAM MARK", "MARK NO", "MARK NO.")]:
+    for anchor in [w for w in words if _is_mark_header(w)]:
         text_h = max(anchor.y1 - anchor.y0, 1.0)
         # beam marks: mark-like words below the header, in the same column, in one contiguous run
         below = sorted((w for w in words if MARK_RE.match(w.text) and abs(w.cx - anchor.cx) < 6 * text_h
@@ -124,14 +160,8 @@ def find_tables(words):
         top_limit = anchor.y1 + 2.5 * text_h
         first_row_top = marks[0].cy + pitch / 2
         header = [w for w in words if first_row_top <= w.y0 and w.y1 <= top_limit + text_h]
-        groups = _cluster([w.cx for w in header], 2.5 * text_h)
         columns, unmapped = {}, []
-        for g in groups:
-            lo, hi = g[0] - 0.01, g[-1] + 0.01
-            parts = sorted((w for w in header if lo <= w.cx <= hi), key=lambda w: (-w.cy, w.x0))
-            label = " ".join(w.text for w in parts)
-            fld = _field_for_header(label)
-            centre = statistics.mean(g)
+        for label, fld, centre in _header_columns(header, text_h):
             if fld is None:
                 unmapped.append(label)
             else:
@@ -147,15 +177,16 @@ def find_tables(words):
 
         for i, mark in enumerate(marks, start=1):
             band = [w for w in words if abs(w.cy - mark.cy) < 0.45 * pitch and x_lo <= w.cx <= x_hi]
-            cells, extra = {}, []
+            cells, extra, word_flags = {}, [], []
             for w in sorted(band, key=lambda w: w.x0):
                 c, fld = min(centres, key=lambda cf: abs(cf[0] - w.cx))
                 if abs(c - w.cx) > 0.6 * spacing + (w.x1 - w.x0) / 2:
                     extra.append(w.text)
                     continue
                 cells.setdefault(fld, []).append(w.text)
+                word_flags.extend(w.flags)
             rec = {f: "" for f in FIELDS}
-            flags = []
+            flags = list(dict.fromkeys(word_flags))
             for fld, texts in cells.items():
                 if fld == "link_type":
                     rec[fld] = "/".join(dict.fromkeys(texts))
