@@ -13,7 +13,7 @@ import requests
 
 from . import fixes
 from .access import BudgetExceeded
-from .checker import RESULT_COLUMNS
+from .checker import NOTE_COLUMN, RESULT_COLUMNS
 from .parsers import clean_suffix, loose_match, mark_key, parse_bar_notation, parse_stirrup_single_str
 from .prompts import ASSISTANT_SYSTEM_PROMPT
 
@@ -49,7 +49,10 @@ TOOLS = [
     },
     {
         "name": "get_summary",
-        "description": "Overall results: spans checked, OK/FAIL row counts, list of beam marks with any FAIL, and beams missing from either file.",
+        "description": "Overall results: spans checked, OK/FAIL row counts, list of beam marks with any FAIL, beams "
+                       "missing from either file, spans not checked because there is no Prokon result (neither OK "
+                       "nor FAIL), and checked spans with a check note (e.g. 'Prokon span 1 used, span 2 not in "
+                       "report', or zero required steel).",
         "input_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         "strict": True,
     },
@@ -69,7 +72,7 @@ TOOLS = [
     },
     {
         "name": "get_beam_detail",
-        "description": "All result rows for one beam. Accepts a span mark ('B101-2') or a base mark ('B101', returns every span). Matching ignores case, spaces and dashes.",
+        "description": "All result rows for one beam. Accepts a span mark ('B101-2') or a base mark ('B101', returns every span). Matching ignores case; 'B1-1' (span 1 of B1) and 'B11' are different beams. Rows carry a 'Check note' when the result needs a second look.",
         "input_schema": {
             "type": "object",
             "properties": {"beam_mark": {"type": "string"}},
@@ -143,8 +146,14 @@ TOOLS = [
 
 # ------------------------------------------------------------------ tools
 
-def _rows_as_dicts(rows):
-    return [dict(zip(RESULT_COLUMNS, r)) for r in rows]
+def _rows_as_dicts(rows, notes=None):
+    out = []
+    for r in rows:
+        d = dict(zip(RESULT_COLUMNS, r))
+        if notes and notes.get(r[0]):
+            d[NOTE_COLUMN] = notes[r[0]]
+        out.append(d)
+    return out
 
 
 def _get_summary(result):
@@ -161,6 +170,7 @@ def _get_summary(result):
         "beam_spans_with_fail": failing,
         "in_pdf_missing_in_excel": result.pdf_only,
         "in_excel_missing_in_pdf": result.excel_only,
+        **fixes.check_notes(result),
     }
 
 
@@ -172,7 +182,7 @@ def _list_rows(result, status, check):
         rows = [r for r in rows if r[6] != "OK"]
     elif status == "FAIL" and check == "SHEAR":
         rows = [r for r in rows if r[11] != "OK"]
-    return {"count": len(rows), "rows": _rows_as_dicts(rows[:60]), "truncated": len(rows) > 60}
+    return {"count": len(rows), "rows": _rows_as_dicts(rows[:60], result.notes), "truncated": len(rows) > 60}
 
 
 def _get_beam_detail(result, beam_mark):
@@ -185,8 +195,12 @@ def _get_beam_detail(result, beam_mark):
         base = loose_match(str(beam_mark).strip(), list(dict.fromkeys(clean_suffix(m)[0] for m in marks)))
         exact = [r for r in result.rows if base is not None and mark_key(clean_suffix(r[0])[0]) == mark_key(base)]
     if not exact:
+        unchecked = [{"beam": m, "note": n} for m, n in result.unchecked
+                     if mark_key(m) == mark_key(beam_mark) or mark_key(clean_suffix(m)[0]) == mark_key(beam_mark)]
+        if unchecked:
+            return {"not_checked": unchecked}
         return {"error": f"No results for beam '{beam_mark}'. Use get_summary to see available marks."}
-    return {"rows": _rows_as_dicts(exact)}
+    return {"rows": _rows_as_dicts(exact, result.notes)}
 
 
 def _evaluate_rebar(notation, required_as_mm2):

@@ -7,13 +7,23 @@ import pypdf
 from .parsers import clean_suffix, is_valid_beam_mark
 
 
+def _float_or_none(parts, i):
+    try:
+        return float(parts[i])
+    except (IndexError, ValueError):
+        return None
+
+
 def extract_all_beams_from_pdf(pdf_file, progress=None):
     """Read the Prokon PDF.
 
     `pdf_file` can be a path or a file-like object (e.g. a Streamlit upload).
     `progress(fraction, text)` is called once per page if provided.
 
-    Returns {base_name: {span_no: {req_t1, req_b2, req_t3, req_asv_l, req_asv_m, req_asv_r}}}
+    Returns {base_name: {span_no: {req_t1, req_b2, req_t3, req_asv_l, req_asv_m, req_asv_r,
+                                   nom_asv_l, nom_asv_m, nom_asv_r}}}
+    The nominal Asv/sv (next column of the shear table, None if absent) is for display only; the checker
+    compares against the required Asv/sv.
     """
     reader = pypdf.PdfReader(pdf_file)
     num_pages = len(reader.pages)
@@ -91,7 +101,7 @@ def extract_all_beams_from_pdf(pdf_file, progress=None):
                         span = beams_raw[current_beam_base].setdefault(
                             current_span_num, {"points": [], "shear_points": []}
                         )
-                        span["shear_points"].append({"pos": pos, "asv_sv": asv_sv})
+                        span["shear_points"].append({"pos": pos, "asv_sv": asv_sv, "nom": _float_or_none(parts, 5)})
                     except ValueError:
                         pass
 
@@ -111,8 +121,12 @@ def extract_all_beams_from_pdf(pdf_file, progress=None):
                 asv_left = sorted_shear[0]["asv_sv"]
                 asv_right = sorted_shear[-1]["asv_sv"]
                 asv_mid = max(p["asv_sv"] for p in sorted_shear)
+                noms = [p["nom"] for p in sorted_shear if p["nom"] is not None]
+                nom_l, nom_r = sorted_shear[0]["nom"], sorted_shear[-1]["nom"]
+                nom_m = max(noms) if noms else None
             else:
                 asv_left, asv_mid, asv_right = 0.0, 0.0, 0.0
+                nom_l = nom_m = nom_r = None
 
             parsed_beams[base_name][s_no] = {
                 "req_t1": sorted_points[0]["as_top"],
@@ -121,6 +135,9 @@ def extract_all_beams_from_pdf(pdf_file, progress=None):
                 "req_asv_l": asv_left,
                 "req_asv_m": asv_mid,
                 "req_asv_r": asv_right,
+                "nom_asv_l": nom_l,
+                "nom_asv_m": nom_m,
+                "nom_asv_r": nom_r,
             }
 
     return parsed_beams

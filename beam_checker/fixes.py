@@ -174,6 +174,15 @@ def width_for(mark, widths):
     return widths[found] if found is not None else None
 
 
+def check_notes(result):
+    """Spans the reader of the results must know about, with a fact sentence computed here."""
+    unchecked = [{"beam": m, "note": n} for m, n in result.unchecked]
+    warned = [{"beam": m, "note": n} for m, n in result.warned]
+    fact = (f"{len(unchecked)} span(s) not checked (no Prokon result; neither OK nor FAIL); "
+            f"{len(warned)} checked span(s) with a check note.")
+    return {"spans_not_checked": unchecked, "spans_with_check_note": warned, "check_notes_fact": fact}
+
+
 def failures_table(result, with_fixes=False, widths=None):
     """The assistant's main table: counts as facts, and one row per failing check (optionally with fixes)."""
     rows = failure_rows(result)
@@ -190,7 +199,7 @@ def failures_table(result, with_fixes=False, widths=None):
                 row.update(suggested_change=s["suggestion"] or "-", suggested_provides=s["asv_sv"],
                            suggested_over_required_pct=_pct(s["asv_sv"], row["required"]) if s["asv_sv"] else None,
                            fit=s["fit"], beam_width_mm=width)
-    out = {"counts": failure_counts(result), "rows": rows}
+    out = {"counts": failure_counts(result), "rows": rows, "check_notes": check_notes(result)}
     if with_fixes:
         out["note"] = ("Suggestions are the smallest arrangement that meets the requirement, limited to "
                        f"{MAX_LAYERS} layers that fit the beam width (cover, links, minimum clear gap) when the width "

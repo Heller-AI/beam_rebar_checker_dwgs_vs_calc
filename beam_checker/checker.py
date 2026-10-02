@@ -35,14 +35,23 @@ RESULT_COLUMNS = [
     "Overall Status", "Remark",
 ]
 
-EMPTY_SPAN = {"req_t1": 0.0, "req_b2": 0.0, "req_t3": 0.0, "req_asv_l": 0.0, "req_asv_m": 0.0, "req_asv_r": 0.0}
-
 # Cell keys of one schedule row, in the checker's own terms:
 # t1/t2/t3 = top bars left/mid/right, b1/b2 = bottom bars, st_l/st_m/st_r = stirrups left/mid/right
 CELL_KEYS = ("t1", "t2", "t3", "b1", "b2", "st_l", "st_m", "st_r")
 
 # Remark column text per position (left, mid, right)
 EXCEL_REMARKS = ("From Col E/L", "From Col H/M", "From Col G/N")
+
+# How a schedule span relates to the Prokon report (shown next to the result, never hidden behind an OK)
+NOT_CHECKED = "NOT CHECKED"
+NOTE_COLUMN = "Check note"
+NOMINAL_COLUMN = "Nominal Asv/sv (Prokon, info only)"
+NO_RESULT_NOTE = "No Prokon result, not checked"
+NO_DATA_NOTE = "No Prokon result, not checked (beam {base} is in the report but no results were read for it)"
+FALLBACK_NOTE = "Prokon span {used} used, span {span} not in report"
+ZERO_NOTE = "Required steel is zero in flexure and shear: check the Prokon match"
+REQUIRED_KEYS = ("req_t1", "req_b2", "req_t3", "req_asv_l", "req_asv_m", "req_asv_r")
+POSITION_NAMES = ("Left Support (Pos Start)", "Mid-Span (Max Bot)", "Right Support (Pos End)")
 
 
 @dataclass
@@ -63,23 +72,65 @@ class ScheduleRecord:
 
 
 @dataclass
+class SpanMatch:
+    """The Prokon requirement for one schedule span, and anything the reader of the result must know."""
+    matched: str = None      # Prokon base mark, None if the beam is not in the report
+    data: dict = None        # required steel of the span, None if there is nothing to check against
+    span_used: int = None
+    note: str = ""           # NO_RESULT_NOTE / NO_DATA_NOTE when not checked; FALLBACK_NOTE / ZERO_NOTE as warnings
+
+    @property
+    def checked(self):
+        return self.data is not None
+
+
+@dataclass
 class CheckResult:
     rows: list = field(default_factory=list)
     pdf_beam_names: set = field(default_factory=set)
     excel_beam_names: set = field(default_factory=set)
     pdf_matched_bases: set = field(default_factory=set)
     matched_count: int = 0
+    notes: dict = field(default_factory=dict)        # checked span mark -> warning (span fallback, zero requirement)
+    unchecked: list = field(default_factory=list)    # [(span mark, reason)] for spans without a Prokon result
+    nominal: dict = field(default_factory=dict)      # checked span mark -> nominal Asv/sv (left, mid, right), info
+    excel_matched_bases: set = field(default_factory=set)
+    no_data_bases: set = field(default_factory=set)  # Prokon bases on the schedule, but with no results read
 
     def to_dataframe(self):
-        return pd.DataFrame(self.rows, columns=RESULT_COLUMNS)
+        """Result rows (unchanged) plus a check note and the nominal Asv/sv, then one NOT CHECKED row per span
+        without a Prokon result."""
+        df = pd.DataFrame(self.rows, columns=RESULT_COLUMNS)
+        df[NOMINAL_COLUMN] = [_nominal_text(self.nominal.get(r[0]), r[1]) for r in self.rows]
+        df[NOTE_COLUMN] = [self.notes.get(r[0], "") for r in self.rows]
+        if self.unchecked:
+            blank = dict.fromkeys(RESULT_COLUMNS, "")
+            extra = pd.DataFrame([{**blank, "Beam Mark": m, "Position / Location": "-", "Overall Status": NOT_CHECKED,
+                                   NOMINAL_COLUMN: "", NOTE_COLUMN: note} for m, note in self.unchecked])
+            df = pd.concat([df, extra], ignore_index=True)
+        return df
 
     @property
     def pdf_only(self):
-        return sorted(b for b in self.pdf_beam_names if b not in self.excel_beam_names)
+        return sorted(b for b in self.pdf_beam_names if b not in self.excel_beam_names and b not in self.pdf_matched_bases
+                      and b not in self.no_data_bases)
 
     @property
     def excel_only(self):
-        return sorted(b for b in self.excel_beam_names if b not in self.pdf_matched_bases)
+        """Schedule base marks with no Prokon beam at all (beams in the report without results are listed apart)."""
+        return sorted(b for b in self.excel_beam_names if b not in self.excel_matched_bases)
+
+    @property
+    def warned(self):
+        """[(span mark, warning)] for checked spans whose result needs a second look."""
+        return sorted(self.notes.items())
+
+
+def _nominal_text(nominal, position):
+    if not nominal or position not in POSITION_NAMES:
+        return ""
+    value = nominal[POSITION_NAMES.index(position)]
+    return "" if value is None else f"{value:.3f}"
 
 
 def _cell(row, idx):
@@ -198,9 +249,9 @@ def check_span(record, p_data, remarks=EXCEL_REMARKS):
             prov_asv_l, not_stl = prov_asv_r, not_str
 
     positions = [
-        ("Left Support (Pos Start)", p_data["req_t1"], not_t1, prov_t1, p_data["req_asv_l"], not_stl, prov_asv_l, remarks[0]),
-        ("Mid-Span (Max Bot)", p_data["req_b2"], not_b2, prov_b2, p_data["req_asv_m"], not_stm, prov_asv_m, remarks[1]),
-        ("Right Support (Pos End)", p_data["req_t3"], not_t3, prov_t3, p_data["req_asv_r"], not_str, prov_asv_r, remarks[2]),
+        (POSITION_NAMES[0], p_data["req_t1"], not_t1, prov_t1, p_data["req_asv_l"], not_stl, prov_asv_l, remarks[0]),
+        (POSITION_NAMES[1], p_data["req_b2"], not_b2, prov_b2, p_data["req_asv_m"], not_stm, prov_asv_m, remarks[1]),
+        (POSITION_NAMES[2], p_data["req_t3"], not_t3, prov_t3, p_data["req_asv_r"], not_str, prov_asv_r, remarks[2]),
     ]
 
     rows = []
@@ -220,18 +271,36 @@ def check_span(record, p_data, remarks=EXCEL_REMARKS):
     return rows
 
 
-def span_requirements(mark, pdf_beams):
-    """(matched Prokon base mark, required steel of the span) for a schedule mark, or (None, None)."""
+def match_span(mark, pdf_beams):
+    """The Prokon requirement for a schedule span mark (SpanMatch).
+
+    - beam not in the report, or in the report without any results read: not checked (data None)
+    - span number not in the report: span 1 (or the first span) is used, with a FALLBACK_NOTE warning
+    - required steel zero in flexure and shear: checked as before, with a ZERO_NOTE warning
+    """
     base, span = clean_suffix(mark)
     matched = _match_pdf_base(base, pdf_beams)
     if not matched:
-        return None, None
+        return SpanMatch(note=NO_RESULT_NOTE)
     spans_data = pdf_beams[matched]
-    # Look up the matching span number, fall back to span 1 / first available
+    if not spans_data:
+        return SpanMatch(matched, note=NO_DATA_NOTE.format(base=matched))
     target_span = span if span in spans_data else 1
-    if target_span not in spans_data and spans_data:
+    if target_span not in spans_data:
         target_span = next(iter(spans_data))
-    return matched, spans_data.get(target_span, EMPTY_SPAN)
+    data = spans_data[target_span]
+    notes = []
+    if target_span != span:
+        notes.append(FALLBACK_NOTE.format(used=target_span, span=span))
+    if not any(data.get(k) for k in REQUIRED_KEYS):
+        notes.append(ZERO_NOTE)
+    return SpanMatch(matched, data, target_span, "; ".join(notes))
+
+
+def span_requirements(mark, pdf_beams):
+    """(matched Prokon base mark, required steel of the span) for a schedule mark, or (None, None) if not checked."""
+    m = match_span(mark, pdf_beams)
+    return (m.matched, m.data) if m.checked else (None, None)
 
 
 def run_comparison(excel_file, pdf_file, sheet_name=None, fmt="Format 2", progress=None):
@@ -269,13 +338,22 @@ def run_comparison_records(records, pdf_file, progress=None, remarks=EXCEL_REMAR
             continue
         result.excel_beam_names.add(excel_base)
 
-        matched, p_data = span_requirements(record.mark, pdf_beams)
-        if not matched:
+        m = match_span(record.mark, pdf_beams)
+        if m.matched:
+            result.excel_matched_bases.add(excel_base)
+        if not m.checked:
+            if m.matched:
+                result.no_data_bases.add(m.matched)
+            result.unchecked.append((record.mark, m.note))
             continue
 
         result.matched_count += 1
-        result.pdf_matched_bases.add(matched)
-        result.rows.extend(check_span(record, p_data, remarks))
+        result.pdf_matched_bases.add(m.matched)
+        result.rows.extend(check_span(record, m.data, remarks))
+        if m.note:
+            result.notes[record.mark] = m.note
+        if "nom_asv_l" in m.data:
+            result.nominal[record.mark] = (m.data["nom_asv_l"], m.data["nom_asv_m"], m.data["nom_asv_r"])
 
     report(1.0, "Done")
     return result

@@ -13,13 +13,14 @@ import pandas as pd
 import streamlit as st
 
 from beam_checker import EXCEL_FORMATS, RESULT_COLUMNS, run_comparison, run_comparison_records
-from beam_checker.checker import check_span, span_requirements
+from beam_checker.checker import NOT_CHECKED, NOTE_COLUMN, check_span, match_span
 from beam_checker import access, agent, drawing_reader, plausibility
 from beam_checker.prompts import FLAG_DESCRIPTIONS
 
 st.set_page_config(page_title="Beam Rebar Checker", page_icon="🏗️", layout="wide")
 
 FAIL_STYLE = "background-color: #FFC7CE; color: #9C0006"
+WARN_STYLE = "background-color: #FFE8A3; color: #5C4400"
 ODD_STYLE = "background-color: rgba(128, 128, 128, 0.08)"
 
 
@@ -31,17 +32,24 @@ def pick_default_sheet(sheets):
 
 
 def style_results(df):
-    """Red rows for FAIL, alternating shading per beam mark otherwise."""
+    """Red rows for FAIL, yellow for NOT CHECKED and for check notes, alternating shading per beam mark otherwise."""
     beam_group = (df["Beam Mark"] != df["Beam Mark"].shift()).cumsum()
 
     def row_style(row):
         if row["Overall Status"] == "FAIL":
             style = FAIL_STYLE
+        elif row["Overall Status"] == NOT_CHECKED:
+            style = WARN_STYLE
         elif beam_group[row.name] % 2:
             style = ODD_STYLE
         else:
             style = ""
-        return [style] * len(row)
+        styles = [style] * len(row)
+        if row.get(NOTE_COLUMN):                         # never let a span with a check note look like a plain OK
+            for i, c in enumerate(row.index):
+                if c in (NOTE_COLUMN, "Overall Status"):
+                    styles[i] = WARN_STYLE
+        return styles
 
     return df.style.apply(row_style, axis=1)
 
@@ -466,12 +474,14 @@ def show_beam_check(table, mark, prokon_up):
         show_beam_table(row, None, mark, "upload the Prokon report to see the requirement")
         return
     beams = prokon_beams(prokon_up.getvalue())
-    matched, req = span_requirements(mark, beams)
-    if not matched:
-        show_beam_table(row, None, mark, "not in the Prokon report")
+    m = match_span(mark, beams)
+    if not m.checked:
+        show_beam_table(row, None, mark, m.note)
         return
-    checks = check_span(drawing_reader.table_to_records(table[table.index == row.name])[0], req)
-    show_beam_table(row, checks, mark, f"Prokon beam {matched}")
+    if m.note:
+        st.warning(f"⚠ {mark}: {m.note}")
+    checks = check_span(drawing_reader.table_to_records(table[table.index == row.name])[0], m.data)
+    show_beam_table(row, checks, mark, f"Prokon beam {m.matched}, span {m.span_used}")
 
 
 def render_findings(df_all, result, ctx):
@@ -525,13 +535,20 @@ def render_findings(df_all, result, ctx):
     if result.pdf_only:
         st.markdown("#### In the Prokon report, not found on the drawing")
         st.write(", ".join(result.pdf_only))
-    if fails.empty and not typos and not result.excel_only and not result.pdf_only:
+    if result.unchecked or result.warned:
+        st.markdown("#### ⚠ Not checked, or checked with a note")
+        st.dataframe(pd.DataFrame(
+            [(m, NOT_CHECKED, n) for m, n in result.unchecked] + [(m, "checked", n) for m, n in result.warned],
+            columns=["Beam mark", "Status", "Note"]), hide_index=True, width="stretch")
+    if fails.empty and not typos and not result.excel_only and not result.pdf_only and not result.unchecked \
+            and not result.warned:
         st.success("No possible typos, no FAILs and no unmatched beams. Still spot-check a few beams against the drawing.")
 
 
 def unmatched_table(result):
     rows = [(m, "In Prokon, not in schedule") for m in result.pdf_only]
     rows += [(m, "In schedule, not in Prokon") for m in result.excel_only]
+    rows += [(m, f"In Prokon, but no results read for it: {NOT_CHECKED.lower()}") for m in sorted(result.no_data_bases)]
     return pd.DataFrame(rows, columns=["Beam mark", "Where"])
 
 
@@ -801,12 +818,17 @@ if result is not None:
                    + ("." if from_drawing else " and the Excel format option."))
     else:
         st.success(f"Checked {result.matched_count} beam span(s).")
+    if result.unchecked or result.warned:
+        st.warning(f"⚠ **{len(result.unchecked)} span(s) not checked** (no Prokon result: neither OK nor FAIL) · "
+                   f"**{len(result.warned)} checked span(s) with a check note** (e.g. another Prokon span used, or "
+                   "zero required steel). They are highlighted in yellow in the table below and listed in the "
+                   "exports' \"Check note\" column.")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Spans checked", result.matched_count)
-    m2.metric("Position rows", len(df_all))
+    m2.metric("Position rows", len(result.rows))
     m3.metric("FAIL rows", n_fail)
-    m4.metric("Unmatched beams", len(result.pdf_only) + len(result.excel_only))
+    m4.metric("Unmatched beams", len(result.pdf_only) + len(result.excel_only) + len(result.no_data_bases))
 
 if source == DRAWING_MODE:
     tab_results, tab_findings, tab_ai = st.tabs(["📋 Results", "🔎 Findings to check", "🤖 AI Assistant"])
@@ -823,7 +845,7 @@ with tab_results:
 
             f1, f2 = st.columns([3, 1])
             search = f1.text_input("Search beam mark", placeholder="e.g. B101")
-            status = f2.selectbox("Status", ["All", "FAIL Only", "OK Only"])
+            status = f2.selectbox("Status", ["All", "FAIL Only", "OK Only", "Not checked", "With a check note"])
 
             df_view = df_all
             if search.strip():
@@ -832,6 +854,10 @@ with tab_results:
                 df_view = df_view[df_view["Overall Status"] == "FAIL"]
             elif status == "OK Only":
                 df_view = df_view[df_view["Overall Status"] == "OK"]
+            elif status == "Not checked":
+                df_view = df_view[df_view["Overall Status"] == NOT_CHECKED]
+            elif status == "With a check note":
+                df_view = df_view[(df_view[NOTE_COLUMN] != "") & (df_view["Overall Status"] != NOT_CHECKED)]
             df_view = df_view.reset_index(drop=True)
 
             st.dataframe(style_results(df_view), hide_index=True, width="stretch", height=560)
