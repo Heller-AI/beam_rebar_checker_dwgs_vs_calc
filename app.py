@@ -355,9 +355,18 @@ def render_review(state, prokon_up, limits):
         st.info(f"Page {page_no}: {note}")
 
     coverage_slot = st.container()
+    # Row highlights come from the table as last edited (Prokon concerns, duplicate marks); when an edit changes
+    # them, the page reruns once so the highlight always matches the table on screen.
+    marks_key = f"review_marks_{fp}"
+    shown = st.session_state.get(marks_key, {"prokon": {}, "duplicates": []})
 
     def highlight(row):
-        style = HIGHLIGHT if row["Review"] else ""
+        if drawing_reader.mark_key(row["Beam mark"]) in shown["duplicates"]:
+            style = FAIL_STYLE
+        elif row["Review"] or str(row["Row ID"]) in shown["prokon"]:
+            style = HIGHLIGHT
+        else:
+            style = ""
         return [style if c in drawing_reader.LOCKED_COLUMNS else "" for c in row.index]
 
     edited = st.data_editor(
@@ -372,7 +381,14 @@ def render_review(state, prokon_up, limits):
         },
     )
     n_done, n_required = drawing_reader.tick_status(edited)
-    n_flag = int((edited["Review"].fillna("") != "").sum())
+    beams = prokon_beams(prokon_up.getvalue()) if prokon_up else None
+    concerns = drawing_reader.prokon_concerns(edited, beams) if beams else {}
+    conflicts = drawing_reader.table_conflicts(edited)
+    now = {"prokon": concerns, "duplicates": sorted({drawing_reader.mark_key(m) for m in conflicts})}
+    if now != shown:
+        st.session_state[marks_key] = now
+        st.rerun()
+    n_flag = int(((edited["Review"].fillna("") != "") | edited["Row ID"].astype(str).isin(concerns)).sum())
     if n_required:
         st.caption(f"**Why ticks:** AI vision can misread a value, so each AI-read row must be ticked after you check "
                    f"it against the drawing (**{n_done} of {n_required} ticked**). Text-layer rows are the drawing's "
@@ -380,8 +396,15 @@ def render_review(state, prokon_up, limits):
     else:
         st.caption("**Why ticks:** they are an optional checklist here. These rows are the drawing's own text, copied "
                    "exactly; only rows read by AI vision must be ticked.")
-    st.caption(f"{len(edited)} row(s) · {n_flag} highlighted (yellow) for extra care. Edit cells to correct them; "
-               "add or delete rows (select a row, then press Delete).")
+    st.caption(f"{len(edited)} row(s) · {n_flag} highlighted (yellow) for extra care: low confidence, a bar or "
+               "stirrup that does not parse, a possible typo, spans that do not continue, or a Prokon concern"
+               + (" · duplicate marks in red" if conflicts else "") + ". Other flags are listed in the Flags column "
+               "without a highlight. Edit cells to correct them; add or delete rows (select a row, then press Delete).")
+    if concerns:
+        by_id = dict(zip(edited["Row ID"].astype(str), edited["Beam mark"].astype(str)))
+        with st.expander(f"⚠ {len(concerns)} row(s) need a look against the Prokon report"):
+            st.dataframe(pd.DataFrame([(by_id.get(i, ""), n) for i, n in concerns.items()],
+                                      columns=["Beam mark", "Prokon"]), hide_index=True, width="stretch")
     with st.expander("What the flags and highlights mean"):
         st.markdown("\n".join(f"- `{k}`: {v}" for k, v in FLAG_DESCRIPTIONS.items()))
         st.markdown("Bottom bars **B3** are shown but, as in Excel mode, the checker does not use them. "
@@ -410,7 +433,6 @@ def render_review(state, prokon_up, limits):
                  "Page and position per row are on a separate sheet.",
         )
 
-    conflicts = drawing_reader.table_conflicts(edited)
     if conflicts:
         st.error("These beam marks appear more than once. Keep one row per span (delete or rename the others): "
                  + ", ".join(conflicts))

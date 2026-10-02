@@ -29,7 +29,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from . import plausibility, text_layer
-from .checker import ScheduleRecord
+from .checker import ScheduleRecord, match_span
 from .parsers import (clean_suffix, is_arrow_symbol, mark_key, normalize_str, parse_bar_notation,
                       parse_stirrup_single_str)
 from .prompts import FLAG_DESCRIPTIONS, extraction_system_prompt
@@ -545,12 +545,28 @@ def _add_checks(rows):
     return out
 
 
-INFO_FLAGS = {"tapered_size"}  # shown, but do not on their own put a row on the review list
+# Flags that are a genuine concern and highlight the row. The others (arrows read as written, stirrup legs not
+# stated, cantilever end, tapered size...) stay visible in the Flags column but do not highlight on their own,
+# so the highlight keeps its meaning on a long AI-read table.
+CONCERN_FLAGS = {"notation_invalid", "unreadable", "possible_typo", "conflict", "continuity_mismatch"}
 
 
 def needs_review(confidence, flags_text):
+    """A row needs extra care: low confidence or a concern flag (medium confidence alone does not)."""
     flags = {f.strip() for f in str(flags_text or "").split(",") if f.strip()}
-    return confidence != "high" or bool(flags - INFO_FLAGS)
+    return confidence == "low" or bool(flags & CONCERN_FLAGS)
+
+
+def prokon_concerns(table, prokon_beams):
+    """{Row ID: note} for rows whose span has no Prokon result, another Prokon span used, or zero requirement."""
+    out = {}
+    for _, r in table.iterrows():
+        mark = _cell(r["Beam mark"])
+        if mark:
+            m = match_span(mark, prokon_beams)
+            if m.note:
+                out[_cell(r["Row ID"])] = m.note
+    return out
 
 
 def build_table(page_records):
