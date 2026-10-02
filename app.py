@@ -519,7 +519,7 @@ def render_findings(df_all, result, ctx):
         st.markdown("#### On the drawing, not in the Prokon report")
         for base in result.excel_only:
             for m in table["Beam mark"].fillna("").astype(str):
-                if m.strip() and drawing_reader.normalize_str(drawing_reader.clean_suffix(m)[0]) ==                         drawing_reader.normalize_str(base):
+                if m.strip() and drawing_reader.mark_key(drawing_reader.clean_suffix(m)[0]) == drawing_reader.mark_key(base):
                     with st.container(border=True):
                         show_beam_table(table_row_for(table, m), None, m, "not in the Prokon report")
     if result.pdf_only:

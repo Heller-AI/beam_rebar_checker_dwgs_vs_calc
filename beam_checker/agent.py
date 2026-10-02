@@ -14,7 +14,7 @@ import requests
 from . import fixes
 from .access import BudgetExceeded
 from .checker import RESULT_COLUMNS
-from .parsers import normalize_str, parse_bar_notation, parse_stirrup_single_str
+from .parsers import clean_suffix, loose_match, mark_key, parse_bar_notation, parse_stirrup_single_str
 from .prompts import ASSISTANT_SYSTEM_PROMPT
 
 # Model IDs verified against the Models API. Prices per million input/output tokens
@@ -176,11 +176,14 @@ def _list_rows(result, status, check):
 
 
 def _get_beam_detail(result, beam_mark):
-    key = normalize_str(beam_mark)
-    exact = [r for r in result.rows if normalize_str(r[0]) == key]
-    if not exact:
-        # Base mark: 'B101' matches 'B101-1', 'B101-2', ...
-        exact = [r for r in result.rows if normalize_str(r[0]).startswith(key) and normalize_str(r[0])[len(key):].isdigit()]
+    marks = list(dict.fromkeys(r[0] for r in result.rows))
+    found = loose_match(str(beam_mark).strip(), marks)
+    if found is not None:
+        exact = [r for r in result.rows if r[0] == found]
+    else:
+        # Base mark: 'B101' matches 'B101-1', 'B101-2', ... (never 'B1011' or 'B101a')
+        base = loose_match(str(beam_mark).strip(), list(dict.fromkeys(clean_suffix(m)[0] for m in marks)))
+        exact = [r for r in result.rows if base is not None and mark_key(clean_suffix(r[0])[0]) == mark_key(base)]
     if not exact:
         return {"error": f"No results for beam '{beam_mark}'. Use get_summary to see available marks."}
     return {"rows": _rows_as_dicts(exact)}

@@ -8,7 +8,7 @@ from .parsers import (
     clean_suffix,
     is_arrow_symbol,
     is_valid_beam_mark,
-    normalize_str,
+    loose_match,
     parse_bar_notation,
     parse_stirrup_list,
 )
@@ -138,13 +138,8 @@ def read_excel_schedule(excel_file, sheet_name=None, fmt="Format 2"):
 
 
 def _match_pdf_base(excel_base, pdf_beams):
-    if excel_base in pdf_beams:
-        return excel_base
-    norm_base = normalize_str(excel_base)
-    for p_base in pdf_beams:
-        if normalize_str(p_base) == norm_base:
-            return p_base
-    return None
+    """Prokon base mark for a schedule base mark: exact, then case-insensitive, then loose (only if unique)."""
+    return loose_match(excel_base, pdf_beams)
 
 
 def check_span(record, p_data, remarks=EXCEL_REMARKS):

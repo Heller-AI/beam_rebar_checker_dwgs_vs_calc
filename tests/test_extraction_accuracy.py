@@ -25,7 +25,7 @@ import pypdf
 import pytest
 
 from beam_checker import agent, checker, drawing_reader as dr
-from beam_checker.parsers import is_arrow_symbol, normalize_str
+from beam_checker.parsers import is_arrow_symbol, mark_key
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "sample_data"
@@ -100,7 +100,7 @@ def test_ai_vision_reading_accuracy():
     model = os.environ.get("EXTRACTION_MODEL", agent.DEFAULT_MODEL)
     pages = dr.load_pages([(drawing.name, drawing.read_bytes())])
     truth_name, truth = _truth_records(pages)
-    truth = {normalize_str(r.mark): r for r in truth}
+    truth = {mark_key(r.mark): r for r in truth}
 
     usage, client = [], agent.make_client(key)
 
@@ -110,7 +110,7 @@ def test_ai_vision_reading_accuracy():
         return msg
 
     extraction = dr.extract_drawing(pages, send, model)
-    got = {normalize_str(r.mark): r for r in dr.table_to_records(extraction.table)}
+    got = {mark_key(r.mark): r for r in dr.table_to_records(extraction.table)}
 
     rows, hits, total = [], 0, 0
     for mark, t in sorted(truth.items()):
@@ -131,7 +131,7 @@ def test_ai_vision_reading_accuracy():
     if excel:
         sheet = os.environ.get("SAMPLE_SHEET") or next(
             (s for s in pd.ExcelFile(excel).sheet_names if "BEAM" in s.upper() or "SCHEDULE" in s.upper()), None)
-        xl = {normalize_str(r.mark): r for r in checker.read_excel_schedule(excel, sheet, os.environ.get("SAMPLE_FORMAT", "Format 2"))}
+        xl = {mark_key(r.mark): r for r in checker.read_excel_schedule(excel, sheet, os.environ.get("SAMPLE_FORMAT", "Format 2"))}
         findings = []
         for mark, t in truth.items():
             if mark not in xl:

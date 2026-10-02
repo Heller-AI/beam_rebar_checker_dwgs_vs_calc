@@ -30,7 +30,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from . import plausibility, text_layer
 from .checker import ScheduleRecord
-from .parsers import clean_suffix, is_arrow_symbol, normalize_str, parse_bar_notation, parse_stirrup_single_str
+from .parsers import (clean_suffix, is_arrow_symbol, mark_key, normalize_str, parse_bar_notation,
+                      parse_stirrup_single_str)
 from .prompts import FLAG_DESCRIPTIONS, extraction_system_prompt
 
 # ------------------------------------------------------------------ limits and prices
@@ -497,7 +498,7 @@ def _add_checks(rows):
     """Deterministic checks after extraction: notation, symbols, conflicts, continuity, duplicates."""
     out, seen = [], set()
     for rec in rows:
-        key = (normalize_str(rec["beam_mark"]),) + tuple((rec[f] or "").replace(" ", "").upper() for f in RECORD_FIELDS[1:])
+        key = (mark_key(rec["beam_mark"]),) + tuple((rec[f] or "").replace(" ", "").upper() for f in RECORD_FIELDS[1:])
         if key in seen:      # identical row seen twice (e.g. in two overlapping tiles or sheets)
             continue
         seen.add(key)
@@ -520,7 +521,7 @@ def _add_checks(rows):
 
     by_mark = {}
     for rec in out:
-        by_mark.setdefault(normalize_str(rec["beam_mark"]), []).append(rec)
+        by_mark.setdefault(mark_key(rec["beam_mark"]), []).append(rec)
     for recs in by_mark.values():
         if len(recs) > 1:
             for rec in recs:
@@ -738,9 +739,9 @@ def _cell(v):
 
 def table_conflicts(table):
     """Beam marks that still appear more than once (the reviewer must keep one row per span)."""
-    marks = [normalize_str(_cell(m)) for m in table["Beam mark"]]
+    marks = [mark_key(_cell(m)) for m in table["Beam mark"]]
     dup = {m for m in marks if m and marks.count(m) > 1}
-    return sorted({_cell(m) for m in table["Beam mark"] if normalize_str(_cell(m)) in dup})
+    return sorted({_cell(m) for m in table["Beam mark"] if mark_key(_cell(m)) in dup})
 
 
 def reading_order(table):

@@ -9,7 +9,7 @@ import math
 import re
 from itertools import product
 
-from .parsers import normalize_str
+from .parsers import loose_match
 from .plausibility import bars_per_layer
 
 BAR_DIAS = (13, 16, 20, 25, 32, 40)   # main bars; H10 is not suggested as main reinforcement
@@ -170,10 +170,8 @@ def width_for(mark, widths):
     """Beam width for a span mark from {mark: width} (exact or normalised match), else None."""
     if not widths:
         return None
-    if mark in widths:
-        return widths[mark]
-    key = normalize_str(mark)
-    return next((w for m, w in widths.items() if normalize_str(m) == key), None)
+    found = loose_match(mark, widths)
+    return widths[found] if found is not None else None
 
 
 def failures_table(result, with_fixes=False, widths=None):

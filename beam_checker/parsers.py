@@ -82,10 +82,35 @@ def parse_stirrup_list(stirrup_str_list):
 
 
 def normalize_str(text):
-    """Loose comparison key for beam marks: drop spaces, dashes, underscores, dots; lowercase."""
+    """Loose comparison key for beam marks: drop spaces, dashes, underscores, dots; lowercase.
+
+    Loose on purpose (e.g. 'B 101' finds 'B-101'), so it can make different marks equal: 'B1-1' and 'B11'
+    both give 'b11'. Never use it to decide that two whole marks are the same beam; use mark_key for that,
+    and loose_match when a loose fallback is wanted.
+    """
     if not text:
         return ""
     return re.sub(r"[\s\-_.]", "", str(text)).lower()
+
+
+def mark_key(text):
+    """Exact comparison key for a beam mark: trimmed and case-insensitive only ('B1-1' and 'B11' differ)."""
+    return str(text or "").strip().upper()
+
+
+def loose_match(mark, candidates):
+    """The candidate equal to `mark`: exact, then case-insensitive, then by normalize_str only if exactly one
+    candidate matches loosely (two loose matches, e.g. 'B1-1' and 'B11' for 'B11', give None)."""
+    if mark in candidates:
+        return mark
+    for keyer in (mark_key, normalize_str):
+        key = keyer(mark)
+        hits = list(dict.fromkeys(c for c in candidates if keyer(c) == key))
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            return None
+    return None
 
 
 def clean_suffix(mark):
