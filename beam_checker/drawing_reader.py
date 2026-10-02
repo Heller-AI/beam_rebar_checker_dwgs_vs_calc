@@ -616,6 +616,60 @@ def ready_to_compare(table):
     return bool(len(table)) and done == required
 
 
+CONFIRM_LABEL = "I have compared this table with the drawing"
+
+
+def concern_rows(table, prokon_notes=None, conflicts=()):
+    """Bool per row: a genuine concern (highlighted), a Prokon concern, or a duplicate mark.
+
+    Duplicates come from `conflicts` (the table as it is now), not from the 'conflict' flag set at reading time,
+    so a row stops being a concern once its duplicate has been deleted or renamed.
+    """
+    notes, dup = prokon_notes or {}, {mark_key(m) for m in conflicts}
+
+    def live(flags):
+        return ", ".join(f for f in str(flags or "").split(", ") if f.strip() != "conflict")
+
+    return pd.Series([needs_review(_cell(c), live(_cell(f))) or _cell(i) in notes or mark_key(_cell(m)) in dup
+                      for c, f, i, m in zip(table["Confidence"], table["Flags"], table["Row ID"], table["Beam mark"])],
+                     index=table.index, dtype=bool)
+
+
+def tick_unflagged(table, concerns):
+    """Tick every row without a concern; rows with a concern keep their tick state (each needs its own tick)."""
+    out = table.copy()
+    out.loc[~concerns, "Reviewed"] = True
+    return out
+
+
+def run_blockers(table, confirmed, has_prokon, conflicts=(), concerns=None, pages_ack=True):
+    """Why the comparison cannot run yet: [reason]. Empty when it can.
+
+    Rows read by AI vision must each be ticked, and the whole table confirmed once; text-layer rows and rows
+    typed by the reviewer need neither.
+    """
+    reasons = []
+    if not len(table):
+        reasons.append("The table is empty.")
+    if not has_prokon:
+        reasons.append("Upload the Prokon report.")
+    if conflicts:
+        reasons.append(f"{len(conflicts)} beam mark(s) appear more than once (red rows): {', '.join(conflicts)}. "
+                       "Keep one row per span (delete or rename the others).")
+    ai = table["Read from"].fillna("") == READ_VISION
+    unticked = ai & ~table["Reviewed"].fillna(False).astype(bool)
+    if unticked.any():
+        flagged = int((unticked & concerns).sum()) if concerns is not None else 0
+        reasons.append(f"{int(unticked.sum())} of {int(ai.sum())} AI-read row(s) not ticked"
+                       + (f", {flagged} of them highlighted: tick each one after checking it against the drawing"
+                          if flagged else "") + ". AI vision can misread a value.")
+    if ai.any() and not confirmed:
+        reasons.append(f"Tick \"{CONFIRM_LABEL}\" (needed when rows were read by AI vision).")
+    if not pages_ack:
+        reasons.append("Confirm that you continue without the page(s) that could not be read.")
+    return reasons
+
+
 def _pt_box_to_px(page, box):
     x0, y0, x1, y1 = box
     s, h = page.scale, page.height_pt

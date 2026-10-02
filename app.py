@@ -369,8 +369,18 @@ def render_review(state, prokon_up, limits):
             style = ""
         return [style if c in drawing_reader.LOCKED_COLUMNS else "" for c in row.index]
 
+    # "Tick all unflagged rows" saves the edited table as the new starting table under a new editor key, so the
+    # reviewer's edits are kept; a new reading of the drawing starts again from that reading.
+    base_key, ver_key = f"review_base_{fp}", f"review_ver_{fp}"
+    base_for, base = st.session_state.get(base_key, (None, None))
+    if base_for != id(extraction):
+        base = extraction.table
+        if base_for is not None:
+            st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
+        st.session_state[base_key] = (id(extraction), base)
     edited = st.data_editor(
-        extraction.table.style.apply(highlight, axis=1), key=f"review_{fp}", num_rows="dynamic", hide_index=True,
+        base.style.apply(highlight, axis=1), key=f"review_{fp}_{st.session_state.get(ver_key, 0)}",
+        num_rows="dynamic", hide_index=True,
         width="stretch", height=440,
         column_config={
             "Reviewed": st.column_config.CheckboxColumn(
@@ -391,8 +401,9 @@ def render_review(state, prokon_up, limits):
     n_flag = int(((edited["Review"].fillna("") != "") | edited["Row ID"].astype(str).isin(concerns)).sum())
     if n_required:
         st.caption(f"**Why ticks:** AI vision can misread a value, so each AI-read row must be ticked after you check "
-                   f"it against the drawing (**{n_done} of {n_required} ticked**). Text-layer rows are the drawing's "
-                   "own text; ticking them is optional.")
+                   f"it against the drawing (**{n_done} of {n_required} ticked**). **Tick all unflagged rows** ticks "
+                   "the rows without a concern; each highlighted row needs its own tick. Then confirm the whole "
+                   "table once, below. Text-layer rows are the drawing's own text; ticking them is optional.")
     else:
         st.caption("**Why ticks:** they are an optional checklist here. These rows are the drawing's own text, copied "
                    "exactly; only rows read by AI vision must be ticked.")
@@ -405,6 +416,14 @@ def render_review(state, prokon_up, limits):
         with st.expander(f"⚠ {len(concerns)} row(s) need a look against the Prokon report"):
             st.dataframe(pd.DataFrame([(by_id.get(i, ""), n) for i, n in concerns.items()],
                                       columns=["Beam mark", "Prokon"]), hide_index=True, width="stretch")
+    is_concern = drawing_reader.concern_rows(edited, concerns, conflicts)
+    n_easy = int((~is_concern & ~edited["Reviewed"].fillna(False).astype(bool)).sum())
+    if n_required and st.button(f"☑ Tick all unflagged rows ({n_easy})", disabled=not n_easy,
+                                help="Ticks only rows without any concern. Highlighted rows, Prokon concerns and "
+                                     "duplicate marks stay unticked: check each one and tick it yourself."):
+        st.session_state[base_key] = (id(extraction), drawing_reader.tick_unflagged(edited, is_concern))
+        st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
+        st.rerun()
     with st.expander("What the flags and highlights mean"):
         st.markdown("\n".join(f"- `{k}`: {v}" for k, v in FLAG_DESCRIPTIONS.items()))
         st.markdown("Bottom bars **B3** are shown but, as in Excel mode, the checker does not use them. "
@@ -439,14 +458,12 @@ def render_review(state, prokon_up, limits):
     ack = True
     if extraction.page_errors:
         ack = st.checkbox("Continue without the page(s) that could not be read")
-    reviewed = drawing_reader.ready_to_compare(edited)
+    confirmed = st.checkbox(drawing_reader.CONFIRM_LABEL, key=f"confirm_{fp}") if n_required else True
+    blockers = drawing_reader.run_blockers(edited, confirmed, bool(prokon_up), conflicts, is_concern, ack)
 
-    run = st.button(RUN_LABEL, type="primary", key="run_drawing",
-                    disabled=bool(conflicts) or not ack or not prokon_up or not reviewed)
-    if not prokon_up:
-        st.caption("Upload the Prokon report to enable the comparison.")
-    elif not reviewed:
-        st.caption(f"Enabled when every AI-read row is ticked ({n_done} of {n_required} so far).")
+    run = st.button(RUN_LABEL, type="primary", key="run_drawing", disabled=bool(blockers))
+    if blockers:
+        st.markdown("**Run comparison is disabled because:**\n" + "\n".join(f"- {b}" for b in blockers))
     if run:
         bar = st.progress(0.0, text="Starting...")
         try:

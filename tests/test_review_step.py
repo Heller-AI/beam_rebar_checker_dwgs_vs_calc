@@ -91,3 +91,66 @@ def test_review_page_lists_prokon_concerns():
         exp = next(e for e in at.expander if "need a look against the Prokon report" in e.label)
         assert exp.label.startswith("⚠ 2 row(s)")
         assert any("2 highlighted (yellow)" in c.value for c in at.caption)
+
+
+# ------------------------------------------------------------------ ticks and unlock rules
+
+def review_table():
+    """Five AI-read rows: two plain, one highlighted (does not parse), one duplicate pair."""
+    return dr.records_to_table([(1, r, {"read": dr.READ_VISION}) for r in (
+        rec("B101-1"), rec("B101-2", S1="H10-150"), rec("B105", T1="3X20"), rec("B106"), rec("b106", T1="4H20"))])
+
+
+def test_tick_all_unflagged_ticks_only_rows_without_a_concern():
+    t = review_table()
+    conflicts = dr.table_conflicts(t)
+    concern = dr.concern_rows(t, {}, conflicts)
+    assert dict(zip(t["Beam mark"], concern)) == {"B105": True, "B106": True, "b106": True,
+                                                  "B101-1": False, "B101-2": False}
+    ticked = dr.tick_unflagged(t, concern)
+    assert dict(zip(ticked["Beam mark"], ticked["Reviewed"])) == {"B105": False, "B106": False, "b106": False,
+                                                                  "B101-1": True, "B101-2": True}
+    # a Prokon concern also keeps the row out of the bulk tick
+    row_id = t.loc[t["Beam mark"] == "B101-2", "Row ID"].item()
+    assert dr.concern_rows(t, {row_id: "Prokon span 1 used, span 2 not in report"}, conflicts)[
+        t["Beam mark"] == "B101-2"].item()
+
+
+def test_unlock_rules():
+    t = review_table().query("`Beam mark` != 'b106'")                       # no duplicates left
+    concern = dr.concern_rows(t, {}, [])
+    reasons = dr.run_blockers(t, confirmed=False, has_prokon=True, concerns=concern)
+    assert reasons == ["4 of 4 AI-read row(s) not ticked, 1 of them highlighted: tick each one after checking it "
+                       "against the drawing. AI vision can misread a value.",
+                       f'Tick "{dr.CONFIRM_LABEL}" (needed when rows were read by AI vision).']
+    t = dr.tick_unflagged(t, concern)
+    assert dr.run_blockers(t, True, True, concerns=concern)[0].startswith("1 of 4 AI-read row(s) not ticked, 1 of")
+    t.loc[:, "Reviewed"] = True
+    assert dr.run_blockers(t, confirmed=False, has_prokon=True, concerns=concern) == [
+        f'Tick "{dr.CONFIRM_LABEL}" (needed when rows were read by AI vision).']
+    assert dr.run_blockers(t, confirmed=True, has_prokon=True, concerns=concern) == []
+    assert dr.run_blockers(t, True, has_prokon=False) == ["Upload the Prokon report."]
+    assert "appear more than once" in dr.run_blockers(review_table(), True, True, ["B106", "b106"])[0]
+
+
+def test_text_layer_rows_need_no_ticks_and_no_confirmation():
+    t = dr.records_to_table([(1, rec("B101-1"), {"read": dr.READ_TEXT}), (1, rec("B105", T1="3X20"), {"read": dr.READ_TEXT})])
+    assert dr.run_blockers(t, confirmed=False, has_prokon=True, concerns=dr.concern_rows(t)) == []
+
+
+def test_review_page_tick_button_confirmation_and_reasons():
+    ex = ai_extraction([rec("B101-1"), rec("B101-2"), rec("B105", T1="3X20")])
+    with drawing_page(ex) as at:
+        run = next(b for b in at.button if b.label.startswith("▶ Run comparison"))
+        assert run.disabled
+        assert any("Run comparison is disabled because" in m.value and "3 of 3 AI-read row(s) not ticked" in m.value
+                   for m in at.markdown)
+        tick = next(b for b in at.button if b.label.startswith("☑ Tick all unflagged rows"))
+        assert tick.label.endswith("(2)")
+        tick.click().run()
+        table = at.dataframe[0].value
+        assert dict(zip(table["Beam mark"], table["Reviewed"])) == {"B105": False, "B101-1": True, "B101-2": True}
+        assert any("1 of 3 AI-read row(s) not ticked, 1 of them highlighted" in m.value for m in at.markdown)
+        at.checkbox(key=next(k for k in at.session_state.filtered_state if k.startswith("confirm_"))).check().run()
+        assert not any("Tick \"I have compared" in m.value for m in at.markdown)
+        assert next(b for b in at.button if b.label.startswith("▶ Run comparison")).disabled
