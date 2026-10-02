@@ -7,6 +7,42 @@ EMPTY_VALUES = ["", "nan", "none", "-", "n.a", "n/a"]
 ARROW_CHARS = ["←", "→", "🡠", "🡢", "!", '"', "-", "—"]
 
 
+# Symbol fonts draw ordinary character codes as pictures: in Wingdings 3, "!" is a left arrow and '"' a right
+# arrow. Known glyphs become arrows the checker already reads (ARROW_CHARS), and only for text in that font;
+# keys are font names as font_key() gives them (family name or font file name).
+_WINGDINGS3_ARROWS = {"!": "←", '"': "→"}
+SYMBOL_FONT_GLYPHS = {"WINGDINGS3": _WINGDINGS3_ARROWS, "WINGDNG3": _WINGDINGS3_ARROWS}
+SYMBOL_FONTS = ("WINGDINGS", "WINGDNG", "WEBDINGS", "SYMBOL", "ZAPFDINGBATS", "MARLETT")
+
+
+def font_key(name):
+    """'ABCDEF+Wingdings3,Regular', 'Wingdings 3' or 'WINGDNG3.TTF' -> 'WINGDINGS3' / 'WINGDNG3'."""
+    name = str(name or "").split("+")[-1].split(",")[0]
+    name = re.sub(r"\.(ttf|otf|shx)$", "", name.strip(), flags=re.IGNORECASE)
+    return re.sub(r"[^A-Z0-9]", "", name.upper())
+
+
+def is_symbol_font(name):
+    return font_key(name).startswith(SYMBOL_FONTS)
+
+
+def map_symbol_text(text, font_name):
+    """Text drawn in font_name -> (text, known).
+
+    Ordinary font: (text unchanged, True). Symbol font whose glyphs are all known: (glyphs mapped, True).
+    Symbol font with an unknown glyph: (text unchanged, False), so the cell can be flagged for review.
+    """
+    if not is_symbol_font(font_name):
+        return text, True
+    key = font_key(font_name)
+    glyphs = next((g for k, g in sorted(SYMBOL_FONT_GLYPHS.items(), key=lambda kv: -len(kv[0]))
+                   if key.startswith(k)), {})
+    stripped = text.strip()
+    if stripped and all(ch in glyphs or ch.isspace() for ch in stripped):
+        return "".join(glyphs.get(ch, ch) for ch in stripped), True
+    return text, False
+
+
 def is_arrow_symbol(val_str):
     """True if a schedule cell only contains a 'continue from neighbour' arrow/dash."""
     if not val_str:

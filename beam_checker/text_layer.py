@@ -10,8 +10,13 @@ reading those words is exact and free, so it is tried before any vision call:
 
 The result uses the same record fields as the AI extraction, plus the row and header boxes
 (in PDF points), so each row's position on the page is known.
+
+The DXF reader (cad_reader) uses the same functions with cad_rules=True, which adds rules for CAD
+schedules: marks with a level prefix (L5-B101-1), sub-headers under a group header ("TOP BARS" over
+T1 / T2 / T3), "BEAM MK". A CAD table object with cell lines is read by its grid (find_grid_table).
 """
 
+import bisect
 import re
 import statistics
 from dataclasses import dataclass, field
@@ -19,6 +24,8 @@ from dataclasses import dataclass, field
 import pypdfium2 as pdfium
 
 MARK_RE = re.compile(r"^[A-Z]{1,6}\d{1,4}[A-Za-z]?(-\d{1,2})?$")
+CAD_MARK_RE = re.compile(r"^(?:[A-Z]{1,3}\d{1,3}-)?[A-Z]{1,6}\d{1,4}[A-Za-z]?(-\d{1,2})?$")  # also a level prefix
+SUB_HEADER_RE = re.compile(r"[TBS][123]")
 SIDE_WORDS = {"LEFT": 1, "MID": 2, "MIDDLE": 2, "CENTRE": 2, "CENTER": 2, "RIGHT": 3}
 FIELDS = ("beam_mark", "size", "T1", "T2", "T3", "B1", "B2", "B3", "side_bars", "link_type",
           "S1", "S2", "S3", "remark")
@@ -49,6 +56,7 @@ class TextTable:
     records: list = field(default_factory=list)   # dicts with FIELDS + "row_box"
     unmapped_headers: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    title: str = ""          # title row above the headers (CAD table objects only)
 
 
 def page_words(pdf_page):
@@ -63,8 +71,34 @@ def page_words(pdf_page):
     return words
 
 
-def _field_for_header(label):
-    """Map a column header (e.g. 'Top Left', 'Stirrups TypeLeft', 'B2') to a record field."""
+def _header_words(label):
+    """Header label as plain upper-case words: punctuation and spacing ignored ('SIZE WxD)' -> SIZE WXD).
+    For matching headers only; cell values are never normalised."""
+    return re.sub(r"[^A-Z0-9]+", " ", label.upper()).split()
+
+
+def _field_for_header(label, cad_rules=False):
+    """Map a column header (e.g. 'Top Left', 'Stirrups TypeLeft', 'B2') to a record field.
+
+    cad_rules: 'Remark' is the remark (the usual rules read it as a mark, since it contains MARK); when the
+    usual rules find nothing, a sub-header word T1-T3 / B1-B3 / S1-S3 under a group header
+    ('MAIN REINFORCEMENT TOP BARS T2', 'LINKS S1') gives the field, and 'BEAM MK' is the mark.
+    """
+    if cad_rules and any(w.startswith("REMARK") for w in _header_words(label)):
+        return "remark"
+    fld = _base_field_for_header(label)
+    if fld is not None or not cad_rules:
+        return fld
+    words = _header_words(label)
+    subs = [w for w in words if SUB_HEADER_RE.fullmatch(w)]
+    if subs:
+        return subs[-1]                       # the lowest header row is the sub-header
+    if words[-2:] == ["BEAM", "MK"]:
+        return "beam_mark"
+    return None
+
+
+def _base_field_for_header(label):
     u = re.sub(r"[^A-Z0-9 ]", " ", label.upper())
     compact = u.replace(" ", "")
     side = next((n for w, n in SIDE_WORDS.items() if w in compact), None)
@@ -101,18 +135,24 @@ def _cluster(values, tol):
     return groups
 
 
-def _is_mark_header(w):
-    return w.text.strip().upper() in ("MARK", "BEAM MARK", "MARK NO", "MARK NO.")
+def _is_mark_header(w, cad_rules=False):
+    if w.text.strip().upper() in ("MARK", "BEAM MARK", "MARK NO", "MARK NO."):
+        return True
+    return cad_rules and " ".join(_header_words(w.text)) in ("BEAM MARK", "BEAM MK", "MARK NO")
 
 
-def _header_columns(header, text_h):
+def _mark_re(cad_rules):
+    return CAD_MARK_RE if cad_rules else MARK_RE
+
+
+def _header_columns(header, text_h, cad_rules=False):
     """Group header words into columns: [(label, field or None, centre x)], left to right."""
     out = []
     for g in _cluster([w.cx for w in header], 2.5 * text_h):
         lo, hi = g[0] - 0.01, g[-1] + 0.01
         parts = sorted((w for w in header if lo <= w.cx <= hi), key=lambda w: (-w.cy, w.x0))
         label = " ".join(w.text for w in parts)
-        out.append((label, _field_for_header(label), statistics.mean(g)))
+        out.append((label, _field_for_header(label, cad_rules), statistics.mean(g)))
     return out
 
 
@@ -121,28 +161,49 @@ EXPECTED_HEADERS = ("Mark", "Size", "Top Left / Middle / Right (or T1-T3)", "Bot
 _HEADER_HINTS = ("MARK", "SIZE", "TOP", "BOT", "STIRRUP", "LINK", "SIDE", "REMARK", "SPAN")
 
 
-def header_report(words, limit=20):
+def header_report(words, limit=20, cad_rules=False):
     """When no table is found: the header-like labels that were found, so the user sees what did not match.
 
     Around each "Mark" word, the labels on its header rows; without a "Mark" word, texts that look like headers.
     """
     found = []
-    for anchor in [w for w in words if _is_mark_header(w)]:
+    for anchor in [w for w in words if _is_mark_header(w, cad_rules)]:
         text_h = max(anchor.y1 - anchor.y0, 1.0)
         band = [w for w in words if anchor.y0 - 1.5 * text_h <= w.cy <= anchor.y1 + 3.5 * text_h]
-        found += [label for label, _, _ in _header_columns(band, text_h)]
+        found += [label for label, _, _ in _header_columns(band, text_h, cad_rules)]
     if not found:
         found = [w.text for w in words if any(h in w.text.upper() for h in _HEADER_HINTS) and len(w.text) <= 30]
     return list(dict.fromkeys(found))[:limit]
 
 
-def find_tables(words):
+def _record(mark_text, placed, row_box, source_note):
+    """One record from the words placed in each field's column: [(field, Word)] in reading order."""
+    cells, word_flags = {}, []
+    for fld, w in placed:
+        cells.setdefault(fld, []).append(w.text)
+        word_flags.extend(w.flags)
+    rec = {f: "" for f in FIELDS}
+    flags = list(dict.fromkeys(word_flags))
+    for fld, texts in cells.items():
+        if fld == "link_type":
+            rec[fld] = "/".join(dict.fromkeys(texts))
+        else:
+            rec[fld] = " ".join(texts)
+            if len(texts) > 1:
+                flags.append("unreadable")
+    rec["beam_mark"] = mark_text
+    rec.update(confidence="high", flags=flags, source_note=source_note, row_box=row_box)
+    return rec
+
+
+def find_tables(words, cad_rules=False):
     """Find schedule tables on one page. Returns [TextTable]; empty if there is none."""
     tables = []
-    for anchor in [w for w in words if _is_mark_header(w)]:
+    mark_re = _mark_re(cad_rules)
+    for anchor in [w for w in words if _is_mark_header(w, cad_rules)]:
         text_h = max(anchor.y1 - anchor.y0, 1.0)
         # beam marks: mark-like words below the header, in the same column, in one contiguous run
-        below = sorted((w for w in words if MARK_RE.match(w.text) and abs(w.cx - anchor.cx) < 6 * text_h
+        below = sorted((w for w in words if mark_re.match(w.text) and abs(w.cx - anchor.cx) < 6 * text_h
                         and w.cy < anchor.y0), key=lambda w: -w.cy)
         if len(below) < 2:
             continue
@@ -161,7 +222,7 @@ def find_tables(words):
         first_row_top = marks[0].cy + pitch / 2
         header = [w for w in words if first_row_top <= w.y0 and w.y1 <= top_limit + text_h]
         columns, unmapped = {}, []
-        for label, fld, centre in _header_columns(header, text_h):
+        for label, fld, centre in _header_columns(header, text_h, cad_rules):
             if fld is None:
                 unmapped.append(label)
             else:
@@ -177,31 +238,101 @@ def find_tables(words):
 
         for i, mark in enumerate(marks, start=1):
             band = [w for w in words if abs(w.cy - mark.cy) < 0.45 * pitch and x_lo <= w.cx <= x_hi]
-            cells, extra, word_flags = {}, [], []
+            placed, extra = [], []
             for w in sorted(band, key=lambda w: w.x0):
                 c, fld = min(centres, key=lambda cf: abs(cf[0] - w.cx))
                 if abs(c - w.cx) > 0.6 * spacing + (w.x1 - w.x0) / 2:
                     extra.append(w.text)
                     continue
-                cells.setdefault(fld, []).append(w.text)
-                word_flags.extend(w.flags)
-            rec = {f: "" for f in FIELDS}
-            flags = list(dict.fromkeys(word_flags))
-            for fld, texts in cells.items():
-                if fld == "link_type":
-                    rec[fld] = "/".join(dict.fromkeys(texts))
-                else:
-                    rec[fld] = " ".join(texts)
-                    if len(texts) > 1:
-                        flags.append("unreadable")
-            rec["beam_mark"] = mark.text
+                placed.append((fld, w))
             if extra:
                 table.notes.append(f"row {i} ({mark.text}): text outside any column ignored: {', '.join(extra)}")
-            rec.update(confidence="high", flags=flags, source_note=f"text layer, table row {i}",
-                       row_box=(x_lo, mark.cy - pitch / 2, x_hi, mark.cy + pitch / 2))
-            table.records.append(rec)
+            table.records.append(_record(mark.text, placed, (x_lo, mark.cy - pitch / 2, x_hi, mark.cy + pitch / 2),
+                                         f"text layer, table row {i}"))
         tables.append(table)
     return tables
+
+
+def find_grid_table(words, col_edges, row_edges):
+    """Read a CAD table object whose cell lines are known (DXF only, cad_rules). Returns a TextTable or None.
+
+    Each text goes to the cell its centre is in, so texts of different cells are never joined. A header text
+    whose cell spans several columns ("TOP BARS" over T1 / T2 / T3; its x0..x1 is the cell width) is part of
+    each of their labels; one spanning most of the columns is the table title. Rows below the headers without
+    a beam mark (e.g. '#N/A' left by a data link) are skipped and listed in the notes, and the content of a
+    column without a header is ignored (also noted).
+    """
+    xs, ys = sorted(col_edges), sorted(row_edges)          # y up: row r from the top is ys[n_rows-r-1]..ys[n_rows-r]
+    n_cols, n_rows = len(xs) - 1, len(ys) - 1
+    if n_cols < 2 or n_rows < 2:
+        return None
+
+    def col(w):
+        i = bisect.bisect(xs, w.cx) - 1
+        return i if 0 <= i < n_cols else None
+
+    def row(w):
+        i = bisect.bisect(ys, w.cy) - 1
+        return n_rows - 1 - i if 0 <= i < n_rows else None
+
+    anchor = next((w for w in sorted(words, key=lambda w: -w.cy) if _is_mark_header(w, cad_rules=True)), None)
+    if anchor is None or col(anchor) is None or row(anchor) is None:
+        return None
+    cells = {}
+    for w in words:
+        r, c = row(w), col(w)
+        if r is not None and c is not None:
+            cells.setdefault((r, c), []).append(w)
+    first = next((r for r in range(row(anchor) + 1, n_rows)
+                  if any(CAD_MARK_RE.match(w.text) for w in cells.get((r, col(anchor)), []))), None)
+    if first is None:
+        return None
+    first_top = ys[n_rows - first]
+
+    header = [w for w in words if w.cy > first_top and col(w) is not None]
+    centres = [(xs[c] + xs[c + 1]) / 2 for c in range(n_cols)]
+    cover = {id(w): [c for c in range(n_cols) if w.x0 <= centres[c] <= w.x1] or [col(w)] for w in header}
+    labelled = {c for cs in cover.values() for c in cs}
+    titles = [w for w in header if len(cover[id(w)]) > 1 and len(cover[id(w)]) > len(labelled) / 2]
+    columns, unmapped, field_of = {}, [], {}
+    for c in range(n_cols):
+        parts = sorted((w for w in header if w not in titles and c in cover[id(w)]), key=lambda w: (-w.cy, w.x0))
+        if not parts:
+            continue
+        label = " ".join(w.text for w in parts)
+        fld = _field_for_header(label, cad_rules=True)
+        if fld is None:
+            unmapped.append(label)
+        else:
+            columns.setdefault(fld, []).append(centres[c])
+            field_of[c] = fld
+    if "beam_mark" not in columns or not any(f in columns for f in ("T1", "T2", "T3", "B1", "B2")):
+        return None
+
+    mark_col = col(anchor)
+    title = " ".join(w.text for w in sorted(titles, key=lambda w: (-w.cy, w.x0)))
+    table = TextTable(columns, (xs[0], first_top, xs[-1], ys[-1]), unmapped_headers=unmapped, title=title)
+    ignored, prev = {}, None
+    for r in range(first, n_rows):
+        in_row = {c: sorted(cells.get((r, c), []), key=lambda w: (-w.cy, w.x0)) for c in range(n_cols)}
+        marks = in_row[mark_col]
+        mark_text = " ".join(w.text for w in marks)
+        if not CAD_MARK_RE.match(mark_text):
+            texts = [w.text for c in range(n_cols) for w in in_row[c]]
+            if texts and not any(_is_mark_header(w, cad_rules=True) for w in marks):     # not a repeated header
+                where = f"after {prev}" if prev else "before the first beam"
+                table.notes.append(f"row without a beam mark skipped ({where}): {', '.join(texts)}")
+            continue
+        for c in range(n_cols):
+            if c not in labelled and in_row[c]:
+                ignored[c] = ignored.get(c, 0) + len(in_row[c])
+        placed = [(field_of[c], w) for c in sorted(field_of) for w in in_row[c]]
+        row_box = (xs[0], ys[n_rows - r - 1], xs[-1], ys[n_rows - r])
+        table.records.append(_record(mark_text, placed, row_box, f"text layer, table row {len(table.records) + 1}"))
+        prev = mark_text
+    for c, n in sorted(ignored.items()):
+        table.notes.append(f"a column without a header was ignored ({n} cell(s))")
+    return table if table.records else None
 
 
 def read_pdf_tables(pdf_bytes):

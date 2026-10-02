@@ -207,3 +207,18 @@ def test_header_report_lists_the_headers_found():
     # no "Mark" header at all: header-like texts are listed instead
     found = tl.header_report([w for w in synthetic_page_words() if w.text != "Mark"])
     assert "Mark" not in found and "Top" in found and "Stirrups" in found
+
+
+def test_cad_rules_for_headers_and_marks():
+    """Rules used by the DXF reader only (cad_rules=True); the PDF text layer keeps its own rules."""
+    assert tl._field_for_header("TOP BARS T2") is None and tl._field_for_header("TOP BARS T2", cad_rules=True) == "T2"
+    assert tl._field_for_header("MAIN REIFORCEMENT BOTTOM BARS B3", cad_rules=True) == "B3"
+    assert tl._field_for_header("LINKS S1", cad_rules=True) == "S1"
+    assert tl._field_for_header("LINKS TYPE", cad_rules=True) == "link_type"
+    assert tl._field_for_header("SIZE WxD)", cad_rules=True) == "size"
+    assert tl._field_for_header("BEAM MK", cad_rules=True) == "beam_mark"
+    assert tl._field_for_header("Remark", cad_rules=True) == "remark"
+    assert tl._field_for_header("Top Left", cad_rules=True) == tl._field_for_header("Top Left") == "T1"
+    assert tl._is_mark_header(W("BEAM  MK.", 0, 0, 1, 1), cad_rules=True)
+    assert not tl._is_mark_header(W("BEAM MK", 0, 0, 1, 1))
+    assert tl.CAD_MARK_RE.match("L5-B101-1") and tl.CAD_MARK_RE.match("B101a") and not tl.MARK_RE.match("L5-B101-1")

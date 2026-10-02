@@ -391,21 +391,22 @@ def render_cad_input(files, limits):
                  f"such as: {', '.join(text_layer.EXPECTED_HEADERS)}.")
         return None
 
-    best = reading.tables.index(reading.best())
+    every = list(range(len(reading.tables)))
     if len(reading.tables) > 1:
         chosen = st.multiselect(
-            "Schedule tables to read", list(range(len(reading.tables))), default=[best],
+            "Schedule tables to read", every, default=every,
             format_func=lambda i: reading.tables[i].label(), key=f"cad_tables_{hashlib.sha256(data).hexdigest()}",
-            help="Several schedule tables were found. The best header match is selected; add the others if the "
-                 "schedule continues in them.")
+            help="Several schedule tables were found (e.g. a single-span and a continuous-span schedule). All are "
+                 "selected; remove any that is not part of the schedule.")
         if not chosen:
             st.info("Choose at least one schedule table.")
             return None
     else:
-        chosen = [best]
+        chosen = every
     chosen = sorted(chosen)
     n_rows = sum(len(reading.tables[i].table.records) for i in chosen)
-    st.success(f"📐 **{n_rows} rows found** in the DXF ({len(chosen)} of {len(reading.tables)} table(s)), "
+    cells = f", {reading.table_cells:,} table cells" if reading.table_cells else ""
+    st.success(f"📐 **{n_rows} rows found** in the DXF ({len(chosen)} of {len(reading.tables)} table(s){cells}), "
                "**cost $0**. Read exactly as typed; no AI involved, nothing sent.")
     fp = drawing_reader.files_fingerprint(files, "cad:" + ",".join(map(str, chosen)))
     extractions = st.session_state.setdefault("drawing_extractions", {})

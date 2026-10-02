@@ -65,7 +65,7 @@ READ_TEXT = "PDF text layer"
 READ_VISION = "AI vision"
 READ_CAD = "CAD text"
 NO_AI_METHODS = (READ_TEXT, READ_CAD)   # the drawing's own text, copied exactly
-CAD_ONLY_FLAGS = {"formatting_removed", "font_codes_removed"}  # set by the DXF reader, never offered to the AI
+CAD_ONLY_FLAGS = {"formatting_removed", "font_codes_removed", "symbol_unknown"}  # set by the DXF reader, never offered to the AI
 
 BAR_FIELDS = ("T1", "T2", "T3", "B1", "B2", "B3")
 STIRRUP_FIELDS = ("S1", "S2", "S3")

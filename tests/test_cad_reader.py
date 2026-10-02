@@ -195,6 +195,172 @@ def test_table_object():
     assert values(reading.tables[0].table.records) == expected_rows()
 
 
+# ------------------------------------------------------------------ table objects with cell lines (as CAD writes them)
+
+GRID_H = 250                                   # text height in drawing units (mm), as in a real schedule
+FONT = r"\fCalibri|b0|i0|c0;"
+ARROWS = r"\fWingdings 3|b0|i0|c2;"           # in Wingdings 3, "!" is drawn as a left arrow and '"' a right one
+# column widths: mark, size, T1-T3, B1-B3, side bars, link type, S1-S3, remark, and a helper column without a header
+GRID_COLS = (1700, 2500, 2000, 3000, 2800, 2000, 3000, 2000, 2000, 2000, 2000, 2000, 2000, 3000, 3000)
+TITLE_H, HEAD_H, ROW_H = 530, 390, 506
+
+
+def grid_rows_single():
+    """Rows as typed in the cells: (font code, text) for symbol cells, plain text otherwise; None = empty."""
+    L, R = (ARROWS, "!"), (ARROWS, '"')
+    return [
+        ["B101", "200x500", L, "2H16", R, L, "2H20", R, "-", "A1", L, "H10-200", R, None, None],
+        ["B102a", "300x600 U/S 400", "3H20", "3H20+3H20", "-", L, "3H16", R, "H10-250 E.F.", "A2", L, "2H10-150",
+         "-", "CANTILEVER", None],
+        ["B103", "200x400", "2H13", "2H13", "2H13", "2H13", "2H13", "2H13", "-", "A1", "H10-200", "H10-200",
+         "H10-200", (FONT, "!"), None],                     # "!" in an ordinary font stays "!"
+        [None, "#N/A", None, None, None, None, None, None, None, None, None, None, None, None, None],
+    ]
+
+
+def grid_rows_continuous():
+    L, R = (ARROWS, "!"), (ARROWS, '"')
+    return [
+        ["B201-1", "400x900", L, "4H25+4H25+2H25", "4H25", "4H20", "4H20+4H20", "4H20", "H16-250 E.F.", "A2", L,
+         "2H10-200", R, None, "B201"],
+        ["B201-2", "400x900", "4H25", "4H25", (r"\fWebdings|b0|i0|c2;", "x"), L, "4H20", R, "H16-250 E.F.", "A2",
+         "2H10-150", "2H10-200", "-", "CANTILEVER", "B201"],
+    ]
+
+
+def add_grid_table(doc, title, rows, size_header="SIZE WxD)"):
+    """A CAD table object as CAD software writes one: an anonymous *T block of cell lines and one MTEXT per cell
+    (centre-anchored at the cell centre, with the cell width; empty cells keep an empty MTEXT), with a title row,
+    a group header row (MAIN REIFORCEMENT / LINKS) and a sub-header row (T1-T3, B1-B3) under TOP / BOTTOM BARS."""
+    blk = doc.blocks.new_anonymous_block(type_char="T")
+    xs = [0]
+    for w in GRID_COLS:
+        xs.append(xs[-1] + w)
+    ys = [0, -TITLE_H, -TITLE_H - HEAD_H, -TITLE_H - 2 * HEAD_H, -TITLE_H - 3 * HEAD_H]
+    for _ in rows:
+        ys.append(ys[-1] - ROW_H)
+
+    def cell(text, c0, c1, y_top, y_bottom, font=FONT):
+        blk.add_mtext("{" + font + (text or "") + "}", dxfattribs={
+            "char_height": GRID_H, "attachment_point": 5, "width": xs[c1 + 1] - xs[c0] - 12,
+            "insert": ((xs[c0] + xs[c1 + 1]) / 2, (y_top + y_bottom) / 2)})
+
+    for y in ys:
+        blk.add_line((xs[0], y), (xs[-1], y))
+    for i, x in enumerate(xs):                                   # lines inside merged header cells start lower
+        top = ys[3] if i in (3, 4, 6, 7) else ys[2] if i in (11, 12, 13) else ys[1] if 0 < i < len(xs) - 1 else ys[0]
+        blk.add_line((x, top), (x, ys[-1]))
+    cell(title, 0, 13, ys[0], ys[1])
+    cell("MAIN REIFORCEMENT", 2, 7, ys[1], ys[2])
+    cell("LINKS", 9, 12, ys[1], ys[2])
+    for text, c in (("BEAM MARK", 0), (size_header, 1), ("SIDE BARS", 8), ("Remark", 13)):
+        cell(text, c, c, ys[2], ys[3])
+    cell("TOP BARS", 2, 4, ys[2], ys[3])
+    cell("BOTTOM BARS", 5, 7, ys[2], ys[3])
+    for text, c in (("TYPE", 9), ("S1", 10), ("S2", 11), ("S3", 12)):        # centred on the line between rows
+        cell(text, c, c, ys[2], ys[4])
+    for text, c in (("T1", 2), ("T2", 3), ("T3", 4), ("B1", 5), ("B2", 6), ("B3", 7)):
+        cell(text, c, c, ys[3], ys[4])
+    for r, row in enumerate(rows):
+        for c, value in enumerate(row):
+            font, text = value if isinstance(value, tuple) else (FONT, value)
+            cell(text, c, c, ys[4 + r], ys[5 + r], font)
+    return blk
+
+
+def grid_table_dxf(tables, size_header="SIZE WxD)"):
+    """DXF with one ACAD_TABLE entity per (title, rows, insert point); the entity is written by hand (see above)."""
+    doc = new_doc()
+    blocks = [(add_grid_table(doc, title, rows, size_header), at) for title, rows, at in tables]
+    owner = doc.modelspace().block_record_handle
+    entities = []
+    for n, (blk, (x, y)) in enumerate(blocks):
+        entities += ["0", "ACAD_TABLE", "5", f"FFF{n}", "330", owner, "100", "AcDbEntity", "8", "0",
+                     "100", "AcDbBlockReference", "2", blk.name, "10", str(x), "20", str(y), "30", "0.0",
+                     "100", "AcDbTable", "280", "0", "343", blk.block_record_handle, "11", "1.0", "21", "0.0",
+                     "31", "0.0", "90", "22", "91", "0", "92", "0"]
+    text = to_bytes(doc).decode("utf-8")
+    at = text.index("ENTITIES\n") + len("ENTITIES\n")
+    return (text[:at] + "\n".join(entities) + "\n" + text[at:]).encode("utf-8")
+
+
+def two_grid_tables():
+    return grid_table_dxf([("SINGLE SPAN BEAM SCHEDULE", grid_rows_single(), (10000, -5000)),
+                           ("CONTINUOUS SPAN BEAM SCHEDULE", grid_rows_continuous(), (60000, -5000))])
+
+
+def test_table_object_with_cell_lines_is_read_by_its_grid():
+    reading = cr.read_dxf(two_grid_tables())
+    single, cont = reading.tables
+    assert (single.kind, cont.kind) == ("single span", "continuous span")
+    assert "table 1 (single span) · 3 rows" in single.label() and "table 2 (continuous span) · 2 rows" in cont.label()
+    rec = single.table.records[0]
+    assert {f: rec[f] for f in tl.FIELDS} == {
+        "beam_mark": "B101", "size": "200x500", "T1": "←", "T2": "2H16", "T3": "→", "B1": "←", "B2": "2H20",
+        "B3": "→", "side_bars": "-", "link_type": "A1", "S1": "←", "S2": "H10-200", "S3": "→", "remark": ""}
+    assert rec["source_note"] == "CAD text, layout 1, single span table, row 1"
+    b102a = single.table.records[1]
+    assert (b102a["size"], b102a["T3"], b102a["S3"], b102a["remark"]) == ("300x600 U/S 400", "-", "-", "CANTILEVER")
+    # wide neighbouring cells stay apart
+    b201 = cont.table.records[0]
+    assert (b201["T2"], b201["T3"], b201["B2"]) == ("4H25+4H25+2H25", "4H25", "4H20+4H20")
+    assert cont.table.records[1]["source_note"] == "CAD text, layout 1, continuous span table, row 2"
+
+
+def test_grid_symbol_fonts_and_flags():
+    single, cont = cr.read_dxf(two_grid_tables()).tables
+    b103 = single.table.records[2]
+    assert b103["remark"] == "!" and b103["flags"] == [cr.FONT_FLAG]           # ordinary font: never mapped
+    assert all(r["flags"] == [cr.FONT_FLAG] for r in single.table.records)     # font codes are informational only
+    b201_2 = cont.table.records[1]
+    assert b201_2["T3"] == "x" and cr.SYMBOL_FLAG in b201_2["flags"]           # unknown symbol font: kept, flagged
+
+
+def test_grid_skips_rows_without_a_mark_and_ignores_a_column_without_a_header():
+    single, cont = cr.read_dxf(two_grid_tables()).tables
+    assert [r["beam_mark"] for r in single.table.records] == ["B101", "B102a", "B103"]
+    assert "row without a beam mark skipped (after B103): #N/A" in single.table.notes
+    assert "a column without a header was ignored (2 cell(s))" in cont.table.notes
+    assert all("B201" not in r["remark"] for r in cont.table.records)
+    assert cont.table.unmapped_headers == [] and "remark" in cont.table.columns
+
+
+def test_grid_header_variants_and_counting():
+    data = grid_table_dxf([("BEAM SCHEDULE", grid_rows_single(), (0, 0))])
+    reading = cr.read_dxf(data)
+    assert reading.tables[0].kind == "" and reading.tables[0].table.records[0]["source_note"] == \
+        "CAD text, layout 1, table row 1"
+    # cells with text: title + 18 headers, then 13 + 14 + 14 + 1 in the rows; empty cells are neither read nor counted
+    assert reading.table_cells == 1 + 18 + 13 + 14 + 14 + 1
+    lines = (len(GRID_COLS) + 1) + (5 + len(grid_rows_single()))
+    assert reading.entities_read == 1 + reading.table_cells + lines          # the table object, its cells and lines
+    for size in ("SIZE (WxD)", "SIZE"):
+        data = grid_table_dxf([("BEAM SCHEDULE", grid_rows_single(), (0, 0))], size_header=size)
+        assert cr.read_dxf(data).tables[0].table.records[0]["size"] == "200x500"
+
+
+def test_grid_dxf_rows_feed_the_review_table():
+    from beam_checker import drawing_reader as dr
+
+    reading = cr.read_dxf(two_grid_tables())
+    ex = dr.read_cad(reading.tables)
+    t = ex.table
+    assert sorted(t["Beam mark"]) == ["B101", "B102a", "B103", "B201-1", "B201-2"]
+    assert "#N/A" in ex.page_notes[1] and "table 2: " in ex.page_notes[1]
+    row = t[t["Beam mark"] == "B101"].iloc[0]
+    assert (row["T1"], row["T3"], row["S1"], row["S3"]) == ("←", "→", "←", "→")
+
+
+def test_symbol_font_mapping_needs_the_symbol_font():
+    assert cr._symbol_text("!", ["Wingdings 3"]) == ("←", ())
+    assert cr._symbol_text('"', ["WINGDNG3.TTF"]) == ("→", ())
+    assert cr._symbol_text("!", ["Calibri"]) == ("!", ())
+    assert cr._symbol_text("!", ["romans.shx"]) == ("!", ())
+    assert cr._symbol_text("x", ["Wingdings 3"]) == ("x", (cr.SYMBOL_FLAG,))       # glyph not in the table
+    assert cr._symbol_text("!", ["Wingdings"]) == ("!", (cr.SYMBOL_FLAG,))         # other symbol font
+    assert cr._symbol_text("!", ["Wingdings 3", "Calibri"]) == ("!", (cr.SYMBOL_FLAG,))   # mixed fonts in a cell
+
+
 # ------------------------------------------------------------------ choosing and reporting
 
 def test_two_schedules_in_one_file_best_match_first():

@@ -4,8 +4,11 @@ import pytest
 
 from beam_checker.parsers import (
     clean_suffix,
+    font_key,
     is_arrow_symbol,
+    is_symbol_font,
     is_valid_beam_mark,
+    map_symbol_text,
     normalize_str,
     parse_bar_notation,
     parse_stirrup_list,
@@ -52,3 +55,14 @@ def test_beam_mark_helpers():
     assert not is_valid_beam_mark("B1")
     assert is_arrow_symbol(" → ")
     assert not is_arrow_symbol("2H16")
+
+
+def test_symbol_font_glyphs_map_only_in_their_font():
+    assert font_key("ABCDEF+Wingdings3,Regular") == "WINGDINGS3" and font_key("WINGDNG3.TTF") == "WINGDNG3"
+    assert is_symbol_font("Wingdings 3") and not is_symbol_font("Calibri") and not is_symbol_font("")
+    assert map_symbol_text("!", "Wingdings 3") == ("←", True)
+    assert map_symbol_text('"', "Wingdings3") == ("→", True)
+    assert map_symbol_text("!", "Arial") == ("!", True)                 # a real exclamation mark is never mapped
+    assert map_symbol_text("x", "Wingdings 3") == ("x", False)          # unknown glyph: kept, to be flagged
+    assert map_symbol_text("!", "Webdings") == ("!", False)             # symbol font without a table
+    assert all(is_arrow_symbol(map_symbol_text(c, "Wingdings 3")[0]) for c in "!\"")   # the checker reads them

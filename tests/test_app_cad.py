@@ -36,16 +36,17 @@ def two_schedules():
     return to_bytes(doc)
 
 
-def test_dxf_is_read_without_ai_and_best_table_is_chosen():
+def test_dxf_is_read_without_ai_and_all_tables_are_chosen():
     at = run_with_upload("schedule.dxf", two_schedules())
     assert not at.exception
     assert any("CAD files:" in i.value and "schedule sheet only" in i.value for i in at.info)
     pick = at.multiselect[0]
-    assert pick.label == "Schedule tables to read" and pick.value == [0] and len(pick.options) == 2
-    assert any("3 rows found" in s.value and "no AI involved" in s.value for s in at.success)
+    assert pick.label == "Schedule tables to read" and pick.value == [0, 1] and len(pick.options) == 2
+    assert any("5 rows found" in s.value and "no AI involved" in s.value for s in at.success)
     assert any("Read from the DXF's text" in c.value for c in at.caption)
     table = at.dataframe[0].value                                     # the review table (data editor)
-    assert set(table["Read from"]) == {"CAD text"} and sorted(table["Beam mark"]) == ["B101-1", "B101-2", "B102a"]
+    assert set(table["Read from"]) == {"CAD text"}
+    assert sorted(table["Beam mark"]) == ["B101-1", "B101-1", "B101-2", "B101-2", "B102a"]
     assert any(b.label == "▶ Run comparison (all beams)" for b in at.button)
 
 
