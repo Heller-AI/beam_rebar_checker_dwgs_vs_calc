@@ -229,7 +229,20 @@ def render_assistant(result, provider, api_key, model, key_mode, limits, secrets
 
 
 EXCEL_MODE = "Excel schedule"
-DRAWING_MODE = "Drawing (PDF, DXF or image)"
+CAD_MODE = "CAD file (DXF)"
+DRAWING_MODE = "Drawing PDF or image"
+DRAWING_MODES = (CAD_MODE, DRAWING_MODE)   # schedule read from a drawing: review step and findings tab
+SOURCE_CAPTIONS = {
+    EXCEL_MODE: "No AI used, free",
+    CAD_MODE: "No AI used, free",
+    DRAWING_MODE: "Free from the PDF text layer; AI vision (paid) only for scans and images",
+}
+CAD_EXTENSIONS = (".dxf", ".dwg")
+IMAGE_PDF_EXTENSIONS = (".pdf", ".png", ".jpg", ".jpeg")
+WRONG_FOR_CAD = ("This is a PDF or image, not a DXF. Choose **Schedule source → Drawing PDF or image** to read it "
+                 "(PDF text layer free; AI vision only for scans and images).")
+WRONG_FOR_DRAWING = ("DXF and DWG files are read in **Schedule source → CAD file (DXF)** (no AI, free). Choose that "
+                     "option and upload the DXF there.")
 RUN_LABEL = "▶ Run comparison (all beams)"
 
 
@@ -267,18 +280,18 @@ def render_drawing_input(provider, api_key, key_mode, model, limits, extra_rules
 
     Returns {"extraction", "fp", "files", "pages"} once a reading exists, else None.
     """
-    uploads = st.file_uploader("Beam schedule drawing (.pdf, .dxf, .png, .jpg)",
-                               type=["pdf", "dxf", "dwg", "png", "jpg", "jpeg"], accept_multiple_files=True,
+    # CAD types are accepted by the widget only to point them to the CAD option with a clear message
+    uploads = st.file_uploader("Beam schedule drawing (.pdf, .png, .jpg)",
+                               type=["pdf", "png", "jpg", "jpeg", "dxf", "dwg"], accept_multiple_files=True,
                                key="drawing_files",
-                               help="DXF: export only the schedule sheet. DWG is not read: save it as DXF first.")
+                               help="The PDF text layer is read first (free). Scans and images are read with AI vision "
+                                    "(paid, after your consent). A DXF goes in Schedule source → CAD file (DXF).")
     if not uploads:
         return None
     files = tuple((u.name, u.getvalue()) for u in uploads)
-    if any(name.lower().endswith((".dxf", ".dwg")) for name, _ in files):
-        if len(files) > 1:
-            st.error("Upload one CAD file on its own (a DXF), not together with PDFs, images or other CAD files.")
-            return None
-        return render_cad_input(files, limits)
+    if any(name.lower().endswith(CAD_EXTENSIONS) for name, _ in files):
+        st.error(WRONG_FOR_DRAWING)
+        return None
     try:
         n_pages = drawing_reader.count_pages(files)
     except Exception as e:
@@ -369,6 +382,24 @@ def render_drawing_input(provider, api_key, key_mode, model, limits, extra_rules
     if extraction is None:
         return None
     return {"extraction": extraction, "fp": fp, "files": files, "pages": pages}
+
+
+def render_cad_upload(limits):
+    """CAD mode: upload one DXF and read it without AI. Returns the reading state like render_drawing_input."""
+    # PDF and image types are accepted by the widget only to point them to the drawing option with a clear message
+    upload = st.file_uploader("CAD schedule (.dxf)", type=["dxf", "dwg", "pdf", "png", "jpg", "jpeg"], key="cad_file",
+                              help="Export only the schedule sheet as DXF. DWG is not read: save it as DXF first. "
+                                   "No AI is used; free.")
+    if upload is None:
+        return None
+    name = upload.name.lower()
+    if name.endswith(IMAGE_PDF_EXTENSIONS):
+        st.error(WRONG_FOR_CAD)
+        return None
+    if name.endswith(".dwg"):
+        st.error(f"❌ {cad_reader.DWG_MESSAGE}")
+        return None
+    return render_cad_input(((upload.name, upload.getvalue()),), limits)
 
 
 def render_cad_input(files, limits):
@@ -557,7 +588,8 @@ def render_review(state, prokon_up, limits):
                 progress=lambda f, t: bar.progress(min(f, 1.0), text=t), remarks=drawing_reader.DRAWING_REMARKS,
             )
             st.session_state.update(
-                result=result, result_source=DRAWING_MODE, sheet="drawing", result_table=fingerprint_df(edited),
+                result=result, result_source=st.session_state.get("schedule_source"), sheet="drawing",
+                result_table=fingerprint_df(edited),
                 chat_api=[], chat_display=[],
                 drawing_result_ctx={"table": edited.copy(), "boxes": extraction.boxes, "files": files,
                                     "max_pages": limits["max_pages"], "method": extraction.method,
@@ -832,7 +864,7 @@ with st.sidebar:
         )
     else:
         ai_model = st.text_input("Model", value=env_model, help="Any GLM model name that supports function calling.")
-    if st.session_state.get("schedule_source") == DRAWING_MODE:
+    if st.session_state.get("schedule_source") in DRAWING_MODES:
         st.caption("The assistant sees only the comparison results rows and a summary of how each schedule row "
                    "was read (method, page, flags). With the PDF text layer or a DXF, nothing from the drawing is sent to "
                    "any AI provider; only the AI vision option sends the drawing pages to Anthropic. "
@@ -849,9 +881,10 @@ drawing_state = None
 run = False
 with st.container(border=True):
     st.subheader("1. Input files")
-    source = st.radio("Schedule source", [EXCEL_MODE, DRAWING_MODE], horizontal=True, key="schedule_source",
-                      help="Excel mode needs no API key. Drawing mode reads the schedule from the PDF text layer "
-                           "or a DXF (free), otherwise with Claude vision (scans and images).")
+    source = st.radio("Schedule source", list(SOURCE_CAPTIONS), horizontal=True, key="schedule_source",
+                      captions=list(SOURCE_CAPTIONS.values()),
+                      help="Excel and CAD (DXF) need no API key and use no AI. A drawing PDF is read from its text "
+                           "layer (free); only scans and images need Claude vision.")
     col_s, col_p = st.columns(2)
     with col_p:
         pdf_up = st.file_uploader("Prokon report (.pdf)", type=["pdf"], key="prokon_pdf")
@@ -865,6 +898,8 @@ with st.container(border=True):
                     sheet_name = st.selectbox("Excel sheet", sheets, index=pick_default_sheet(sheets))
                 except Exception as e:
                     st.error(f"Cannot read sheet list: {e}")
+        elif source == CAD_MODE:
+            drawing_state = render_cad_upload(limits)
         else:
             drawing_state = render_drawing_input(ai_provider, api_key, key_mode, ai_model, limits, extra_rules,
                                                  secrets_to_hide)
@@ -903,9 +938,9 @@ if run:
         bar.empty()
 
 result = st.session_state.get("result")
-from_drawing = st.session_state.get("result_source") == DRAWING_MODE
-if result is not None and from_drawing != (source == DRAWING_MODE):
-    result = None  # results belong to the other schedule source
+from_drawing = st.session_state.get("result_source") in DRAWING_MODES
+if result is not None and st.session_state.get("result_source") != source:
+    result = None  # results belong to another schedule source
 if result is not None and from_drawing and drawing_state is None:
     result = None  # the drawing was removed
 if result is not None and from_drawing and st.session_state.get("current_table") != st.session_state.get("result_table"):
@@ -958,7 +993,7 @@ if result is not None:
     m3.metric("FAIL rows", n_fail)
     m4.metric("Unmatched beams", len(result.pdf_only) + len(result.excel_only) + len(result.no_data_bases))
 
-if source == DRAWING_MODE:
+if source in DRAWING_MODES:
     tab_results, tab_findings, tab_ai = st.tabs(["📋 Results", "🔎 Findings to check", "🤖 AI Assistant"])
 else:
     tab_results, tab_ai = st.tabs(["📋 Results", "🤖 AI Assistant"])

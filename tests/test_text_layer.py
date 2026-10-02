@@ -224,8 +224,8 @@ def test_cad_rules_for_headers_and_marks():
     assert tl.CAD_MARK_RE.match("L5-B101-1") and tl.CAD_MARK_RE.match("B101a") and not tl.MARK_RE.match("L5-B101-1")
 
 
-def pdf_with_texts(items):
-    """A one-page PDF with one text object per (text, standard font name, x)."""
+def pdf_with_texts(items, ys=None):
+    """A one-page PDF with one text object per (text, standard font name, x); at y=100, or ys[i]."""
     import ctypes
     import io
 
@@ -233,12 +233,12 @@ def pdf_with_texts(items):
     import pypdfium2.raw as raw
 
     pdf = pdfium.PdfDocument.new()
-    page = pdf.new_page(400, 200)
-    for text, font, x in items:
+    page = pdf.new_page(1400, 700)
+    for i, (text, font, x) in enumerate(items):
         obj = raw.FPDFPageObj_NewTextObj(pdf.raw, font.encode("ascii"), ctypes.c_float(12))
         buf = ctypes.create_string_buffer((text + "\0").encode("utf-16-le"))
         raw.FPDFText_SetText(obj, ctypes.cast(buf, ctypes.POINTER(raw.FPDF_WCHAR)))
-        raw.FPDFPageObj_Transform(obj, 1, 0, 0, 1, x, 100)
+        raw.FPDFPageObj_Transform(obj, 1, 0, 0, 1, x - 3 * len(text), ys[i] if ys else 100)
         raw.FPDFPage_InsertObject(page.raw, obj)
     page.gen_content()
     out = io.BytesIO()
@@ -251,7 +251,8 @@ def test_pdf_symbol_font_glyphs_are_mapped_only_in_their_font(monkeypatch):
 
     data = pdf_with_texts([("!", "Helvetica", 50), ('"', "Helvetica", 120), ("!", "Helvetica", 190),
                            ('"', "Helvetica", 260), ("x", "Helvetica", 330)])
-    page = pdfium.PdfDocument(data)[0]
+    doc = pdfium.PdfDocument(data)
+    page = doc[0]
     assert [(w.text, w.flags, w.symbol) for w in tl.page_words(page)] == \
         [("!", (), False), ('"', (), False), ("!", (), False), ('"', (), False), ("x", (), False)]   # real font
 
@@ -261,8 +262,10 @@ def test_pdf_symbol_font_glyphs_are_mapped_only_in_their_font(monkeypatch):
     def font_at(obj):                                    # nearest insert x (the glyph box starts just right of it)
         return names[min(names, key=lambda x: abs(x - obj.get_bounds()[0]))]
 
-    assert real(pdfium.PdfDocument(data)[0].get_objects().__next__()) == "Helvetica"        # read from the PDF
+    assert real(next(page.get_objects())) == "Helvetica"                                       # read from the PDF
     monkeypatch.setattr(tl, "_font_name", font_at)
     words = [(w.text, w.flags, w.symbol) for w in tl.page_words(page)]
     assert words == [("!", (), False), ('"', (), False), ("←", (), True), ("→", (), True),
                      ("x", (tl.SYMBOL_FLAG,), False)]
+    page.close()
+    doc.close()

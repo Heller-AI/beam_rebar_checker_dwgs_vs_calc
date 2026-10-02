@@ -1,4 +1,4 @@
-"""Drawing mode with a DXF in the real Streamlit page (generated DXF files, no AI calls)."""
+"""Schedule source "CAD file (DXF)" in the real Streamlit page (generated DXF files, no AI calls)."""
 
 from types import SimpleNamespace as NS
 from unittest import mock
@@ -10,18 +10,23 @@ from beam_checker import cad_reader as cr
 from tests.test_cad_reader import COLS, ROWS, add_schedule, new_doc, to_bytes
 
 
-def run_with_upload(name, data):
-    """Run the page in drawing mode with one uploaded drawing file (AppTest cannot upload files itself)."""
+CAD_MODE, DRAWING_MODE = "CAD file (DXF)", "Drawing PDF or image"
+
+
+def run_with_upload(name, data, source=CAD_MODE):
+    """Run the page with one uploaded schedule file in the given schedule source (AppTest cannot upload files)."""
     real = st.file_uploader
 
     def uploader(label, *args, **kwargs):
+        if kwargs.get("key") == "cad_file":
+            return NS(name=name, getvalue=lambda: data)
         if kwargs.get("key") == "drawing_files":
             return [NS(name=name, getvalue=lambda: data)]
         return real(label, *args, **kwargs)
 
     with mock.patch.object(st, "file_uploader", side_effect=uploader):
         at = AppTest.from_file("../app.py", default_timeout=60)
-        at.session_state["schedule_source"] = "Drawing (PDF, DXF or image)"
+        at.session_state["schedule_source"] = source
         at.run()
     return at
 
@@ -64,19 +69,28 @@ def test_unmatched_headers_are_listed():
     assert "'Upper Left'" in msg and "Top Left / Middle / Right" in msg
 
 
-def test_dxf_with_a_pdf_is_refused():
-    real = st.file_uploader
+def test_three_schedule_sources_and_the_dxf_option_is_labelled_free():
+    at = AppTest.from_file("../app.py", default_timeout=60)
+    at.run()
+    radio = at.radio(key="schedule_source")
+    assert radio.options == ["Excel schedule", CAD_MODE, DRAWING_MODE] and radio.value == "Excel schedule"
+    assert radio.proto.captions[1] == "No AI used, free"
 
-    def uploader(label, *args, **kwargs):
-        if kwargs.get("key") == "drawing_files":
-            return [NS(name="a.dxf", getvalue=lambda: b""), NS(name="b.pdf", getvalue=lambda: b"")]
-        return real(label, *args, **kwargs)
 
-    with mock.patch.object(st, "file_uploader", side_effect=uploader):
-        at = AppTest.from_file("../app.py", default_timeout=60)
-        at.session_state["schedule_source"] = "Drawing (PDF, DXF or image)"
-        at.run()
-    assert any("Upload one CAD file on its own" in e.value for e in at.error)
+def test_pdf_or_image_in_the_cad_option_points_to_the_drawing_option():
+    for name in ("schedule.pdf", "schedule.png", "schedule.jpg"):
+        at = run_with_upload(name, b"%PDF-1.7 not read")
+        assert not at.exception
+        assert any("not a DXF" in e.value and "Drawing PDF or image" in e.value for e in at.error)
+        assert not at.dataframe                                            # nothing was read
+
+
+def test_dxf_in_the_drawing_option_points_to_the_cad_option():
+    for name in ("schedule.dxf", "schedule.dwg"):
+        at = run_with_upload(name, to_bytes(new_doc()), source=DRAWING_MODE)
+        assert not at.exception
+        assert any("CAD file (DXF)" in e.value and "no AI" in e.value for e in at.error)
+        assert not at.dataframe
 
 
 def test_assumed_leg_count_note_above_the_review_table():
@@ -97,3 +111,16 @@ def test_assumed_leg_count_note_above_the_review_table():
 def test_no_leg_count_note_when_legs_are_stated():
     at = run_with_upload("schedule.dxf", two_schedules())       # stirrups written with legs, or not of type A1
     assert not at.exception and not [i for i in at.info if "legs assumed" in i.value]
+
+
+def test_text_layer_pdf_in_the_drawing_option_reaches_the_review_table():
+    from tests.test_cad_reader import cells
+    from tests.test_text_layer import pdf_with_texts
+
+    data = pdf_with_texts([(text, "Helvetica", x) for text, x, _ in cells()], ys=[y for _, _, y in cells()])
+    at = run_with_upload("schedule.pdf", data, source=DRAWING_MODE)
+    assert not at.exception
+    assert any("rows found" in s.value and "PDF text layer" in s.value for s in at.success)
+    table = at.dataframe[0].value
+    assert set(table["Read from"]) == {"PDF text layer"} and sorted(table["Beam mark"]) == ["B101-1", "B101-2", "B102a"]
+    assert any(b.label == "▶ Run comparison (all beams)" for b in at.button)

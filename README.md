@@ -14,7 +14,7 @@ Any position where provided < required is flagged **FAIL**.
 ## Features
 
 - Upload the Excel schedule and Prokon PDF in the browser. Nothing to install for end users.
-- **Drawing mode**: upload the beam schedule drawing instead of an Excel file. Read from the PDF text layer or a CAD drawing saved as DXF when possible (free, no AI), otherwise with Claude vision; you can review and correct the table, and each finding is shown as a small table of drawing values vs Prokon requirement. See [Drawing mode](#drawing-mode).
+- **Drawing mode**: take the schedule from a drawing instead of an Excel file, with **Schedule source → CAD file (DXF)** (no AI used, free) or **Drawing PDF or image** (read from the PDF text layer when possible, free; Claude vision only for scans and images); you can review and correct the table, and each finding is shown as a small table of drawing values vs Prokon requirement. See [Drawing mode](#drawing-mode).
 - Picks the sheet automatically (the first one named *BEAM* or *SCHEDULE*).
 - Two schedule layouts:
   - **Type 1**: mark in col A, top bars C–E, bottom F–G, stirrups K, L, M
@@ -57,7 +57,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app opens in your browser at http://localhost:8501 and only runs on your PC (close the terminal to stop it). Choose **Schedule source → Drawing (PDF, DXF or image)**, upload the DXF and the Prokon report, review the table, then **▶ Run comparison (all beams)**.
+The app opens in your browser at http://localhost:8501 and only runs on your PC (close the terminal to stop it). Choose **Schedule source → CAD file (DXF)**, upload the DXF and the Prokon report, review the table, then **▶ Run comparison (all beams)**.
 
 For large DXF files, raise the limits in a `.env` file next to `app.py` (copy `.env.example`), for example:
 
@@ -143,7 +143,7 @@ Prices are from the [Anthropic pricing page](https://platform.claude.com/docs/en
 
 ## Drawing mode
 
-Choose **Schedule source → Drawing (PDF, DXF or image)** to take the provided steel from a beam schedule drawing instead of an Excel file. Only the schedule source changes: the drawing is converted into a schedule table, and then the same flow as Excel mode runs (same Prokon upload, same **▶ Run comparison (all beams)** button, same results page, unmatched beams, downloads and AI Assistant). Excel mode needs no API key; drawing mode with the PDF text layer or a DXF doesn't either.
+**Schedule source** has three options: **Excel schedule**, **CAD file (DXF)** (accepts a DXF; no AI used, free) and **Drawing PDF or image** (accepts a PDF, PNG or JPG). Choose one of the last two to take the provided steel from a beam schedule drawing instead of an Excel file. A DXF uploaded under *Drawing PDF or image*, or a PDF or image under *CAD file (DXF)*, is not read: a message names the option to use. Only the schedule source changes: the drawing is converted into a schedule table, and then the same flow as Excel mode runs (same Prokon upload, same **▶ Run comparison (all beams)** button, same results page, unmatched beams, downloads and AI Assistant). Excel mode needs no API key; drawing mode with the PDF text layer or a DXF doesn't either.
 
 Drawings can be older than the calculation. The purpose of drawing mode is to **surface discrepancies for a person to double-check**, not to certify the design.
 
