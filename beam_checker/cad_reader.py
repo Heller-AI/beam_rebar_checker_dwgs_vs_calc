@@ -39,7 +39,7 @@ from .parsers import font_key, is_symbol_font, map_symbol_text
 
 FORMATTING_FLAG = "formatting_removed"   # underline / overline / strike-through or stacked text removed: review
 FONT_FLAG = "font_codes_removed"          # only font, height, colour... codes removed: shown, not highlighted
-SYMBOL_FLAG = "symbol_unknown"            # symbol-font text with no known meaning, kept as written: review
+SYMBOL_FLAG = text_layer.SYMBOL_FLAG       # symbol-font text with no known meaning, kept as written: review
 
 DEFAULT_MAX_MB = 30
 DEFAULT_MAX_ENTITIES = 300_000

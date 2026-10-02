@@ -17,11 +17,16 @@ T1 / T2 / T3), "BEAM MK". A CAD table object with cell lines is read by its grid
 """
 
 import bisect
+import ctypes
 import re
 import statistics
 from dataclasses import dataclass, field
 
 import pypdfium2 as pdfium
+
+from .parsers import map_symbol_text
+
+SYMBOL_FLAG = "symbol_unknown"   # text in a symbol font with no known meaning, kept as written: review
 
 MARK_RE = re.compile(r"^[A-Z]{1,6}\d{1,4}[A-Za-z]?(-\d{1,2})?$")
 CAD_MARK_RE = re.compile(r"^(?:[A-Z]{1,3}\d{1,3}-)?[A-Z]{1,6}\d{1,4}[A-Za-z]?(-\d{1,2})?$")  # also a level prefix
@@ -60,15 +65,37 @@ class TextTable:
     title: str = ""          # title row above the headers (CAD table objects only)
 
 
+def _font_name(text_obj):
+    """Font name of a PDF text object (e.g. 'ABCDEF+Wingdings3'), or '' when pdfium cannot tell."""
+    raw = pdfium.raw
+    get = getattr(raw, "FPDFFont_GetBaseFontName", None) or getattr(raw, "FPDFFont_GetFontName", None)
+    try:
+        font = raw.FPDFTextObj_GetFont(text_obj.raw)
+        size = get(font, None, 0) if font and get else 0
+        if size <= 0:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        get(font, buf, size)
+        return buf.value.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
 def page_words(pdf_page):
-    """Every text object on the page with its bounding box (PDF points, origin bottom-left)."""
+    """Every text object on the page with its bounding box (PDF points, origin bottom-left).
+
+    Text drawn in a symbol font is mapped with the shared table (parsers.map_symbol_text: in Wingdings 3,
+    "!" is a left arrow and '"' a right one), only when the object's font is that symbol font; text in another
+    symbol font is kept as written and flagged for review. Text in an ordinary font is never changed.
+    """
     tp = pdf_page.get_textpage()
     words = []
     for obj in pdf_page.get_objects(filter=(pdfium.raw.FPDF_PAGEOBJ_TEXT,)):
         x0, y0, x1, y1 = obj.get_bounds()
         text = tp.get_text_bounded(x0, y0, x1, y1).strip()
         if text:
-            words.append(Word(text, x0, y0, x1, y1))
+            shown, known = map_symbol_text(text, _font_name(obj))
+            words.append(Word(shown, x0, y0, x1, y1, () if known else (SYMBOL_FLAG,), symbol=shown != text))
     return words
 
 

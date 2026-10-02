@@ -65,7 +65,8 @@ READ_TEXT = "PDF text layer"
 READ_VISION = "AI vision"
 READ_CAD = "CAD text"
 NO_AI_METHODS = (READ_TEXT, READ_CAD)   # the drawing's own text, copied exactly
-CAD_ONLY_FLAGS = {"formatting_removed", "font_codes_removed", "symbol_unknown"}  # set by the DXF reader, never offered to the AI
+# set by the DXF reader (symbol_unknown also by the PDF text layer), never offered to the AI
+CAD_ONLY_FLAGS = {"formatting_removed", "font_codes_removed", "symbol_unknown"}
 
 BAR_FIELDS = ("T1", "T2", "T3", "B1", "B2", "B3")
 STIRRUP_FIELDS = ("S1", "S2", "S3")
@@ -505,7 +506,8 @@ def _flags_text(flags):
 
 
 # End columns where an arrow means "same as the middle column". An arrow there drawn with a known symbol font
-# (a Wingdings 3 cell in a DXF) is the drawing's own symbol, read exactly: it is not flagged ditto_unconfirmed.
+# (a Wingdings 3 cell in a DXF or in a PDF's text layer) is the drawing's own symbol, read exactly: it is not
+# flagged ditto_unconfirmed.
 # Arrows read by AI vision, typed as ordinary text, in a middle column or in an unknown font keep the flag.
 EXACT_ARROW_FIELDS = {"T1", "T3", "B1", "B3", "S1", "S3"}
 
