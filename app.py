@@ -1,4 +1,6 @@
-"""Streamlit front-end for the Prokon vs Beam Schedule reinforcement checker.
+"""Streamlit front-end of the Beam Schedule Checker vs Calculation Report.
+
+A beam schedule (Excel, DXF or drawing) is checked against the required steel in a Prokon calculation report.
 
 Run locally:  streamlit run app.py
 """
@@ -17,7 +19,8 @@ from beam_checker.checker import NOT_CHECKED, NOTE_COLUMN, check_span, match_spa
 from beam_checker import access, agent, cad_reader, drawing_reader, plausibility, text_layer
 from beam_checker.prompts import FLAG_DESCRIPTIONS
 
-st.set_page_config(page_title="Beam Rebar Checker", page_icon="🏗️", layout="wide")
+APP_NAME = "Beam Schedule Checker vs Calculation Report"
+st.set_page_config(page_title=APP_NAME, page_icon="🏗️", layout="wide")
 
 FAIL_STYLE = "background-color: #FFC7CE; color: #9C0006"
 WARN_STYLE = "background-color: #FFE8A3; color: #5C4400"
@@ -872,7 +875,7 @@ with st.sidebar:
     else:
         st.caption("The assistant only sees the comparison results table, not your PDF or Excel files.")
 
-st.title("🏗️ Multi-Beam Reinforcement Checker")
+st.title(f"🏗️ {APP_NAME}")
 st.caption("Compare required steel from a **Prokon** continuous-beam report against the provided steel in a "
            "**beam schedule**: an Excel file, or a schedule drawing.")
 

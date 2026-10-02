@@ -1,4 +1,7 @@
-"""Beam rebar checker: Prokon calculation report vs. Excel beam schedule."""
+"""Beam Schedule Checker vs Calculation Report.
+
+Provided steel in a beam schedule vs. required steel in a Prokon calculation report.
+"""
 
 from .checker import (
     EXCEL_FORMATS,

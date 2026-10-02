@@ -1,4 +1,4 @@
-# Beam Rebar Checker (Prokon vs Beam Schedule)
+# Beam Schedule Checker vs Calculation Report
 
 A web app that checks the reinforcement in a **beam schedule** against the **required steel from a Prokon continuous-beam PDF report**. The schedule can be an **Excel file** or a **schedule drawing** (PDF, DXF or PNG/JPG), read from the PDF text layer or the DXF's text when possible (free, no AI) or by Claude vision otherwise, and reviewed by you before the check runs.
 

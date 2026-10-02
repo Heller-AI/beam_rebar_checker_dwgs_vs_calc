@@ -124,3 +124,13 @@ def test_text_layer_pdf_in_the_drawing_option_reaches_the_review_table():
     table = at.dataframe[0].value
     assert set(table["Read from"]) == {"PDF text layer"} and sorted(table["Beam mark"]) == ["B101-1", "B101-2", "B102a"]
     assert any(b.label == "▶ Run comparison (all beams)" for b in at.button)
+
+
+def test_app_name_in_the_header_and_the_browser_tab():
+    name = "Beam Schedule Checker vs Calculation Report"
+    with mock.patch.object(st, "set_page_config", wraps=st.set_page_config) as page_config:
+        at = AppTest.from_file("../app.py", default_timeout=60)
+        at.run()
+    assert not at.exception
+    assert at.title[0].value == f"🏗️ {name}"
+    assert page_config.call_args.kwargs["page_title"] == name                         # browser tab
