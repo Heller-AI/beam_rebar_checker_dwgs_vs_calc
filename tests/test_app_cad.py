@@ -13,8 +13,24 @@ from tests.test_cad_reader import COLS, ROWS, add_schedule, new_doc, to_bytes
 CAD_MODE, DRAWING_MODE = "CAD file (DXF)", "Drawing PDF or image"
 
 
-def run_with_upload(name, data, source=CAD_MODE):
-    """Run the page with one uploaded schedule file in the given schedule source (AppTest cannot upload files)."""
+def run_with_upload(name, data, source=CAD_MODE, prokon=None):
+    """Run the page with one uploaded schedule file in the given schedule source (AppTest cannot upload files).
+
+    prokon: Prokon beams {mark: {span: requirements}} returned for an uploaded Prokon report, or None for no report.
+    """
+    at, patches = page_with_upload(name, data, source, prokon)
+    try:
+        at.run()
+    finally:
+        for p in patches:
+            p.stop()
+    return at
+
+
+def page_with_upload(name, data, source=CAD_MODE, prokon=None):
+    """(AppTest not yet run, patches) for tests that click; the patches stay active until the test ends."""
+    import beam_checker
+
     real = st.file_uploader
 
     def uploader(label, *args, **kwargs):
@@ -22,13 +38,19 @@ def run_with_upload(name, data, source=CAD_MODE):
             return NS(name=name, getvalue=lambda: data)
         if kwargs.get("key") == "drawing_files":
             return [NS(name=name, getvalue=lambda: data)]
+        if kwargs.get("key") == "prokon_pdf":
+            # bytes unique per mocked report: the page caches the Prokon reading by file contents
+            body = b"%PDF-prokon-cad " + repr(sorted((prokon or {}).items())).encode()
+            return NS(name="prokon.pdf", getvalue=lambda: body) if prokon is not None else None
         return real(label, *args, **kwargs)
 
-    with mock.patch.object(st, "file_uploader", side_effect=uploader):
-        at = AppTest.from_file("../app.py", default_timeout=60)
-        at.session_state["schedule_source"] = source
-        at.run()
-    return at
+    patches = [mock.patch.object(st, "file_uploader", side_effect=uploader),
+               mock.patch.object(beam_checker, "extract_all_beams_from_pdf", return_value=prokon or {})]
+    for p in patches:
+        p.start()
+    at = AppTest.from_file("../app.py", default_timeout=60)
+    at.session_state["schedule_source"] = source
+    return at, patches
 
 
 def two_schedules():
@@ -134,3 +156,61 @@ def test_app_name_in_the_header_and_the_browser_tab():
     assert not at.exception
     assert at.title[0].value == f"🏗️ {name}"
     assert page_config.call_args.kwargs["page_title"] == name                         # browser tab
+
+
+REQ = {"req_t1": 100.0, "req_b2": 100.0, "req_t3": 100.0, "req_asv_l": 0.1, "req_asv_m": 0.1, "req_asv_r": 0.1}
+
+
+def tick_rows():
+    from tests.test_cad_reader import ARROWS
+
+    L, R = (ARROWS, "!"), (ARROWS, '"')
+    return [["B101", "200x500", L, "2H16", R, L, "2H20", R, "-", "A1", L, "H10-200", R, None, None],   # A1: noted only
+            ["B102", "200x500", L, "2H16", R, L, "2H20", R, "-", "A2", L, "H10-200", R, None, None],   # A2: highlighted
+            ["B103", "200x500", L, "2H16", R, L, "2H20", R, "-", "A2", L, "2H10-200", R, None, None]]
+
+
+def test_cad_ticks_never_block_run_and_tick_all_skips_highlighted_rows():
+    from tests.test_cad_reader import grid_table_dxf
+
+    data = grid_table_dxf([("BEAM SCHEDULE", tick_rows(), (0, 0))])
+    at, patches = page_with_upload("schedule.dxf", data, prokon={m: {1: REQ} for m in ("B101", "B102", "B103")})
+    try:
+        at.run()
+        assert not at.exception
+        assert not next(b for b in at.button if b.label.startswith("▶ Run comparison")).disabled   # no ticks needed
+        assert not any("Run comparison is disabled" in m.value for m in at.markdown)
+        tick = next(b for b in at.button if b.label.startswith("☑ Tick all unflagged rows"))
+        assert tick.label.endswith("(2)")
+        tick.click().run()
+        table = at.dataframe[0].value
+        assert dict(zip(table["Beam mark"], table["Reviewed"])) == {"B102": False, "B101": True, "B103": True}
+        assert not next(b for b in at.button if b.label.startswith("▶ Run comparison")).disabled
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_text_layer_pdf_has_the_tick_all_button_and_run_is_enabled():
+    from tests.test_cad_reader import cells
+    from tests.test_text_layer import pdf_with_texts
+
+    data = pdf_with_texts([(text, "Helvetica", x) for text, x, _ in cells()], ys=[y for _, _, y in cells()])
+    at = run_with_upload("schedule.pdf", data, source=DRAWING_MODE,
+                         prokon={m: {1: REQ, 2: REQ} for m in ("B101", "B102a")})
+    assert not at.exception
+    assert any(b.label.startswith("☑ Tick all unflagged rows") for b in at.button)
+    assert not next(b for b in at.button if b.label.startswith("▶ Run comparison")).disabled
+
+
+def test_a_real_duplicate_mark_blocks_run_and_says_why():
+    from tests.test_cad_reader import grid_table_dxf
+
+    rows = tick_rows()
+    rows[2][0] = "B101"                                                      # the same mark twice
+    at = run_with_upload("schedule.dxf", grid_table_dxf([("BEAM SCHEDULE", rows, (0, 0))]),
+                         prokon={"B101": {1: REQ}, "B102": {1: REQ}})
+    assert not at.exception
+    assert next(b for b in at.button if b.label.startswith("▶ Run comparison")).disabled
+    assert any("Run comparison is disabled because" in m.value and "appear more than once" in m.value
+               for m in at.markdown)

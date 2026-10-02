@@ -537,9 +537,13 @@ def render_review(state, prokon_up, limits):
                                       columns=["Beam mark", "Prokon"]), hide_index=True, width="stretch")
     is_concern = drawing_reader.concern_rows(edited, concerns, conflicts)
     n_easy = int((~is_concern & ~edited["Reviewed"].fillna(False).astype(bool)).sum())
-    if n_required and st.button(f"☑ Tick all unflagged rows ({n_easy})", disabled=not n_easy,
-                                help="Ticks only rows without any concern. Highlighted rows, Prokon concerns and "
-                                     "duplicate marks stay unticked: check each one and tick it yourself."):
+    # Shown for every table: with AI-read rows the ticks are required, with CAD / text-layer rows they are an
+    # optional checklist and never block the comparison (run_blockers). Either way highlighted rows are skipped.
+    tick_help = ("Ticks only rows without any concern. Highlighted rows, Prokon concerns and duplicate marks stay "
+                 "unticked: check each one and tick it yourself.")
+    if not n_required:
+        tick_help += " Here the ticks are an optional checklist: they never block Run comparison."
+    if len(edited) and st.button(f"☑ Tick all unflagged rows ({n_easy})", disabled=not n_easy, help=tick_help):
         st.session_state[base_key] = (id(extraction), drawing_reader.tick_unflagged(edited, is_concern))
         st.session_state[ver_key] = st.session_state.get(ver_key, 0) + 1
         st.rerun()
