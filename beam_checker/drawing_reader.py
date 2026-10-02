@@ -383,8 +383,13 @@ def _tool_result(tool_use_id, payload, is_error=False):
     return block
 
 
-def extract_page(send, page, model, system_prompt, on_request=None, max_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
-    """Run the extraction conversation for one page. `send(**kwargs)` returns a Message."""
+def extract_page(send, page, model, system_prompt, on_request=None, max_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
+                 on_response=None):
+    """Run the extraction conversation for one page. `send(**kwargs)` returns a Message.
+
+    `on_request()` runs before each model request (it may raise to stop); `on_response()` runs once a request
+    has returned a response, so a request that failed with an error is not counted there.
+    """
     messages = [{"role": "user", "content": page_content(page)}]
     result = PageExtraction(page.number)
     submission, nudged, bad_json_retries = None, False, 0
@@ -407,11 +412,15 @@ def extract_page(send, page, model, system_prompt, on_request=None, max_tokens=D
             )
         except ValueError:
             # The SDK could not parse a streamed tool input at all: re-issue the same request once
+            if on_response:
+                on_response()                   # the model did answer (and it is billed), only unreadably
             bad_json_retries += 1
             if bad_json_retries > 1:
                 raise ExtractionError("The model's output could not be read twice in a row. Try again.")
             continue
 
+        if on_response:
+            on_response()
         if msg.stop_reason == "refusal":
             raise ExtractionError("The model declined to process this page.")
         if msg.stop_reason == "max_tokens":
@@ -482,6 +491,8 @@ class DrawingExtraction:
     requests: int = 0
     boxes: dict = field(default_factory=dict)   # Row ID -> {"page", "row", "header"} boxes in image pixels
     method: str = READ_VISION
+    page_records: list = field(default_factory=list)   # [(page number, record, meta)] as read, before checks
+    stopped: Exception = None                   # error that stopped an AI reading early (pages read are kept)
 
 
 def _flags_text(flags):
@@ -774,21 +785,42 @@ def refresh_review_column(table):
     return table.assign(_o=order).sort_values("_o", kind="stable").drop(columns="_o").reset_index(drop=True)
 
 
+STOPPED_NOTE = "not read: the reading stopped before this page"
+
+
 def extract_drawing(pages, send, model, extra_rules="", on_request=None, on_progress=None,
-                    max_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
+                    max_tokens=DEFAULT_MAX_OUTPUT_TOKENS, on_response=None, stop_on=(), previous=None):
     """Extract every page. A failed page is reported in page_errors; the others still return.
 
-    Budget errors raised by `on_request` stop the whole run (they are not page errors).
+    Errors raised by `on_request` or `send` stop the whole run. If they are of a type in `stop_on` (e.g. a budget
+    limit or an API error), the pages already read are kept and returned, with the error in `stopped`, so a retry
+    does not pay for them again; otherwise the error is raised.
+    `previous`: an earlier reading of the same files; only its failed pages are read again, the others are kept.
     """
     system_prompt = extraction_system_prompt(extra_rules)
-    page_records, notes, errors, requests = [], {}, {}, 0
+    notes, errors = {}, {}
+    page_records, requests = [], 0
+    if previous is not None:
+        keep = {p.number for p in pages} - set(previous.page_errors)
+        page_records = [r for r in previous.page_records if r[0] in keep]
+        notes = {n: t for n, t in previous.page_notes.items() if n in keep}
+        requests = previous.requests
+        pages = [p for p in pages if p.number in previous.page_errors]
+    stopped = None
     for i, page in enumerate(pages):
         if on_progress:
             on_progress(i / len(pages), f"Reading page {page.number} of {len(pages)}...")
+        if stopped is not None:
+            errors[page.number] = STOPPED_NOTE
+            continue
         try:
-            res = extract_page(send, page, model, system_prompt, on_request, max_tokens)
+            res = extract_page(send, page, model, system_prompt, on_request, max_tokens, on_response)
         except ExtractionError as e:
             errors[page.number] = str(e)
+            continue
+        except stop_on as e:
+            stopped = e
+            errors[page.number] = STOPPED_NOTE
             continue
         requests += res.requests
         page_records += [(page.number, r, {"read": READ_VISION, "box": _pct_box_to_px(page, r["row_box"])})
@@ -797,8 +829,9 @@ def extract_drawing(pages, send, model, extra_rules="", on_request=None, on_prog
             notes[page.number] = res.note
     if on_progress:
         on_progress(1.0, "Done")
+    page_records.sort(key=lambda r: r[0])
     table, boxes = build_table(page_records)
-    return DrawingExtraction(table, notes, errors, requests, boxes, READ_VISION)
+    return DrawingExtraction(table, notes, errors, requests, boxes, READ_VISION, page_records, stopped)
 
 
 # ------------------------------------------------------------------ after review

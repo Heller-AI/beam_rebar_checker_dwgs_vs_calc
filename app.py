@@ -309,29 +309,49 @@ def render_drawing_input(provider, api_key, key_mode, model, limits, extra_rules
         st.markdown(f"**{est['pages']} page(s)**, sent as {est['images']} image(s). Estimated cost with "
                     f"`{model}`: **{cost}**.")
         consent = st.checkbox("I confirm I am allowed to send this drawing to Anthropic", key="drawing_consent")
-        cached = fp in extractions
+        # Readings are cached per browser session by file contents + model + rules: uploading the same drawing
+        # again in this session makes no new AI calls. A new session (or a page refresh) starts without them.
+        cached = extractions.get(fp)
+        failed = sorted(cached.page_errors) if cached else []
         if cached:
             st.caption("Showing the AI reading already made for these files and this model (no new AI calls).")
-        label = "🔁 Read again with AI (new AI calls)" if cached else "🤖 Read the drawing with AI"
+        if failed:
+            est_f = drawing_reader.estimate_cost([p for p in pages if p.number in failed], model)
+            cost_f = f"about ${est_f['low']:.2f}–{est_f['high']:.2f}" if est_f["low"] is not None else "cost unknown"
+            label = (f"🔁 Read the {len(failed)} page(s) that were not read (new AI calls, {cost_f}); "
+                     "pages already read are kept")
+        elif cached:
+            label = f"🔁 Read all pages again with AI (new AI calls, {cost})"
+        else:
+            label = "🤖 Read the drawing with AI"
         if st.button(label, disabled=not consent):
+            # The allowance is checked before each request and counted once a response has arrived, so a
+            # request that fails with an error is not counted.
             def on_request():
                 if key_mode == "shared":
-                    access.consume_call(st.session_state, "drawing", limits["drawing_session"], daily_counter(),
-                                        limits["daily"])
+                    access.check_call(st.session_state, "drawing", limits["drawing_session"], daily_counter(),
+                                      limits["daily"])
+
+            def on_response():
+                if key_mode == "shared":
+                    access.count_call(st.session_state, "drawing", daily_counter())
 
             bar = st.progress(0.0, text="Starting...")
             try:
                 extractions[fp] = drawing_reader.extract_drawing(
                     pages, drawing_reader.stream_send(agent.make_client(api_key)), model, extra_rules,
                     on_request=on_request, on_progress=lambda f, t: bar.progress(min(f, 1.0), text=t),
-                    max_tokens=limits["drawing_max_tokens"],
+                    max_tokens=limits["drawing_max_tokens"], on_response=on_response,
+                    stop_on=(access.BudgetExceeded, anthropic.APIError), previous=cached if failed else None,
                 )
-            except access.BudgetExceeded as e:
-                st.error(f"🛑 {e}")
-            except anthropic.APIError as e:
-                st.error(access.redact(f"❌ {agent.describe_anthropic_error(e, model)}", secrets))
             finally:
                 bar.empty()
+            stopped = extractions[fp].stopped
+            if isinstance(stopped, access.BudgetExceeded):
+                st.error(f"🛑 {stopped} Pages already read are kept.")
+            elif stopped is not None:
+                st.error(access.redact(f"❌ {agent.describe_anthropic_error(stopped, model)} Pages already read "
+                                       "are kept; read the others again when the problem is solved.", secrets))
 
     extraction = extractions.get(fp)
     if extraction is None:

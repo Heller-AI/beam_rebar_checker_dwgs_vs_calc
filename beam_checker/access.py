@@ -106,6 +106,30 @@ class DailyCounter:
             return True
 
 
+def check_call(state, bucket, session_limit, daily_counter, daily_limit, today=None):
+    """Raise BudgetExceeded if one more model request would pass a limit; counts nothing.
+
+    Used before a request is sent; consume_call counts it once a response has arrived, so a request that
+    fails (network or API error) is not charged to the allowance.
+    """
+    if state.get(f"ai_calls_{bucket}", 0) >= session_limit:
+        raise BudgetExceeded(
+            f"This session has used its {session_limit} AI calls on the shared key. "
+            "Ask the app owner for more, or use your own API key."
+        )
+    if daily_counter.used(today) >= daily_limit:
+        raise BudgetExceeded(
+            "The shared key's daily AI limit for this app has been reached. "
+            "Try again tomorrow, or use your own API key."
+        )
+
+
+def count_call(state, bucket, daily_counter, today=None):
+    """Count one model request that has returned a response (after check_call allowed it). Never raises."""
+    state[f"ai_calls_{bucket}"] = state.get(f"ai_calls_{bucket}", 0) + 1
+    daily_counter.try_consume(float("inf"), today)
+
+
 def consume_call(state, bucket, session_limit, daily_counter, daily_limit, today=None):
     """Count one model request against the session cap and the server-wide daily cap.
 
