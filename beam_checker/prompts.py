@@ -4,6 +4,8 @@ Provider-neutral: any provider's call loads the same text as its system prompt. 
 reading rules can be appended at runtime from the EXTRA_READING_RULES setting (never stored here).
 """
 
+from .parsers import ASSUMED_LINK
+
 ASSISTANT_SYSTEM_PROMPT = """You are a structural engineering assistant inside a beam reinforcement checker.
 The app has compared a beam schedule (provided steel) against a Prokon continuous-beam
 report (required steel). Each beam span has 3 rows: Left Support (top steel), Mid-Span (bottom
@@ -41,7 +43,7 @@ FLAG_DESCRIPTIONS = {
     "ditto_assumed": "An arrow/ditto/blank was read as 'same as previous column' (drawing convention confirmed)",
     "ditto_unconfirmed": "An arrow/ditto symbol was copied as written; its meaning is not confirmed",
     "cantilever_one_end": "Only one end is populated; the other end was left blank on purpose",
-    "legs_not_stated": "Number of stirrup legs not written; the checker assumes 2",
+    "legs_not_stated": f"Number of stirrup legs not written; the checker assumes {ASSUMED_LINK.legs}",
     "unreadable": "At least one cell was hard to read",
     "notation_invalid": "A bar or stirrup string could not be parsed",
     "conflict": "The same beam mark appears more than once with different values",

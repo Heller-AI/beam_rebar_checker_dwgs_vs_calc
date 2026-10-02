@@ -436,6 +436,7 @@ def render_review(state, prokon_up, limits):
         st.info(f"{where} {page_no}: {note}")
 
     coverage_slot = st.container()
+    legs_slot = st.container()         # assumed leg count, filled from the table as edited
     # Row highlights come from the table as last edited (Prokon concerns, duplicate marks); when an edit changes
     # them, the page reruns once so the highlight always matches the table on screen.
     marks_key = f"review_marks_{fp}"
@@ -479,6 +480,9 @@ def render_review(state, prokon_up, limits):
     if now != shown:
         st.session_state[marks_key] = now
         st.rerun()
+    legs_note = drawing_reader.assumed_legs_note(edited)
+    if legs_note:
+        legs_slot.info(legs_note, icon="ℹ️")
     n_flag = int(((edited["Review"].fillna("") != "") | edited["Row ID"].astype(str).isin(concerns)).sum())
     if n_required:
         st.caption(f"**Why ticks:** AI vision can misread a value, so each AI-read row must be ticked after you check "

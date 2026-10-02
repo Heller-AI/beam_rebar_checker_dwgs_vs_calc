@@ -77,3 +77,23 @@ def test_dxf_with_a_pdf_is_refused():
         at.session_state["schedule_source"] = "Drawing (PDF, DXF or image)"
         at.run()
     assert any("Upload one CAD file on its own" in e.value for e in at.error)
+
+
+def test_assumed_leg_count_note_above_the_review_table():
+    from tests.test_cad_reader import ARROWS, grid_table_dxf
+
+    L, R = (ARROWS, "!"), (ARROWS, '"')
+    rows = [["B101", "200x500", L, "2H16", R, L, "2H20", R, "-", "A1", L, "H10-200", R, None, None],
+            ["B102", "200x500", L, "2H16", R, L, "2H20", R, "-", "A1", "H10-150", "H10-200", "H10-150", None, None],
+            ["B103", "300x600", L, "3H16", R, L, "3H20", R, "-", "A2", L, "H10-200", R, None, None]]
+    at = run_with_upload("schedule.dxf", grid_table_dxf([("BEAM SCHEDULE", rows, (0, 0))]))
+    assert not at.exception
+    notes = [i.value for i in at.info if "legs assumed" in i.value]
+    assert notes == ["2 rows: link type A1 has no leg count; 2 legs assumed. Confirm against the drawing legend."]
+    table = at.dataframe[0].value
+    assert dict(zip(table["Beam mark"], table["Review"])) == {"B101": "", "B102": "", "B103": "⚠ check"}
+
+
+def test_no_leg_count_note_when_legs_are_stated():
+    at = run_with_upload("schedule.dxf", two_schedules())       # stirrups written with legs, or not of type A1
+    assert not at.exception and not [i for i in at.info if "legs assumed" in i.value]

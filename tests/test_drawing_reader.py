@@ -289,3 +289,37 @@ def test_fingerprint_changes_with_files_model_and_rules():
 def test_extra_rules_are_appended_only_when_set():
     assert extraction_system_prompt("") == EXTRACTION_RULES
     assert extraction_system_prompt("  Rule X  ").endswith("Rule X")
+
+
+def test_assumed_link_type_without_legs_is_not_highlighted_but_noted():
+    from beam_checker.parsers import ASSUMED_LINK
+
+    no_legs = {"S1": "H10-150", "S2": "H10-200", "S3": "H10-150"}
+    table = dr.records_to_table([
+        (1, rec("B101", link_type=ASSUMED_LINK.link_type, **no_legs)),      # assumed default: not highlighted
+        (1, rec("B102", link_type="a1 ", **no_legs)),                       # same type, written loosely
+        (1, rec("B103", link_type="A2", **no_legs)),                        # another type: highlighted
+        # no link type: not highlighted (Excel/PDF/AI layouts often have no link type column; the 2-leg assumption
+        # for them is unchanged existing behaviour), the flag stays in the Flags column
+        (1, rec("B104", link_type="", **no_legs)),
+        (1, rec("B105", link_type=ASSUMED_LINK.link_type)),                 # legs stated: nothing to note
+    ])
+    review = dict(zip(table["Beam mark"], table["Review"]))
+    assert all("legs_not_stated" in flags_of(table, m) for m in ("B101", "B102", "B103", "B104"))   # flag kept
+    assert review["B101"] == review["B102"] == review["B104"] == "" and review["B103"] == "⚠ check"
+    assert dr.assumed_legs_note(table) == (f"2 rows: link type {ASSUMED_LINK.link_type} has no leg count; "
+                                           f"{ASSUMED_LINK.legs} legs assumed. Confirm against the drawing legend.")
+    one = dr.records_to_table([(1, rec("B101", link_type="A1", **no_legs))])
+    assert dr.assumed_legs_note(one).startswith("1 row: link type A1")
+    assert dr.assumed_legs_note(dr.records_to_table([(1, rec("B101")), (1, rec("B103", link_type="A2", **no_legs))])) == ""
+    assert dr.needs_review("high", "legs_not_stated", "A2") and not dr.needs_review("high", "legs_not_stated", "A1")
+    assert not dr.needs_review("high", "legs_not_stated") and not dr.needs_review("high", "legs_not_stated", "")
+    assert dr.needs_review("high", "legs_not_stated, continuity_mismatch", "A1")       # other concerns still count
+
+
+def test_tick_all_skips_exactly_the_highlighted_leg_rows():
+    no_legs = {"S1": "H10-150", "S2": "H10-200", "S3": "H10-150"}
+    table = dr.records_to_table([(1, rec("B101", link_type="A1", **no_legs)), (1, rec("B102", link_type="", **no_legs)),
+                                 (1, rec("B103", link_type="A2", **no_legs))])
+    concern = dict(zip(table["Beam mark"], dr.concern_rows(table)))
+    assert concern == {"B101": False, "B102": False, "B103": True}                   # same rows as the highlight

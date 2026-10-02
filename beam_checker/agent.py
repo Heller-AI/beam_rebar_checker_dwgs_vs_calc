@@ -14,7 +14,8 @@ import requests
 from . import fixes
 from .access import BudgetExceeded
 from .checker import NOTE_COLUMN, RESULT_COLUMNS
-from .parsers import clean_suffix, loose_match, mark_key, parse_bar_notation, parse_stirrup_single_str
+from .parsers import (ASSUMED_LINK, clean_suffix, loose_match, mark_key, parse_bar_notation,
+                      parse_stirrup_single_str)
 from .prompts import ASSISTANT_SYSTEM_PROMPT
 
 # Model IDs verified against the Models API. Prices per million input/output tokens
@@ -97,7 +98,8 @@ TOOLS = [
     },
     {
         "name": "evaluate_stirrup",
-        "description": "Asv/sv of a stirrup notation (e.g. '2H10-150', legs default to 2) and whether it meets a required Asv/sv in mm²/mm.",
+        "description": f"Asv/sv of a stirrup notation (e.g. '2H10-150', legs default to {ASSUMED_LINK.legs}) and whether it "
+                       "meets a required Asv/sv in mm²/mm.",
         "input_schema": {
             "type": "object",
             "properties": {

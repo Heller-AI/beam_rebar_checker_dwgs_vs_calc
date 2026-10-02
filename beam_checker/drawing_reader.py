@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from . import plausibility, text_layer
 from .checker import ScheduleRecord, match_span
-from .parsers import (clean_suffix, is_arrow_symbol, mark_key, normalize_str, parse_bar_notation,
+from .parsers import (ASSUMED_LINK, clean_suffix, is_arrow_symbol, mark_key, normalize_str, parse_bar_notation,
                       parse_stirrup_single_str)
 from .prompts import FLAG_DESCRIPTIONS, extraction_system_prompt
 
@@ -350,7 +350,7 @@ def check_notation(text, kind):
         return {"text": text, "ok": False, "note": "not valid stirrup notation (expected e.g. 2H10-150)"}
     result = {"text": text, "ok": True, "asv_sv": asv}
     if not t[0].isdigit():
-        result["note"] = "legs not stated; the checker assumes 2"
+        result["note"] = f"legs not stated; the checker assumes {ASSUMED_LINK.legs}"
     return result
 
 
@@ -504,6 +504,12 @@ def _flags_text(flags):
     return ", ".join(dict.fromkeys(flags))
 
 
+# End columns where an arrow means "same as the middle column". An arrow there drawn with a known symbol font
+# (a Wingdings 3 cell in a DXF) is the drawing's own symbol, read exactly: it is not flagged ditto_unconfirmed.
+# Arrows read by AI vision, typed as ordinary text, in a middle column or in an unknown font keep the flag.
+EXACT_ARROW_FIELDS = {"T1", "T3", "B1", "B3", "S1", "S3"}
+
+
 def _is_ditto(value):
     """An arrow or ditto mark (a plain dash is just a dash, not 'same as previous')."""
     v = (value or "").strip()
@@ -521,7 +527,8 @@ def _add_checks(rows):
         flags = list(rec["flags"])
         if record_problems(rec):
             flags.append("notation_invalid")
-        if any(_is_ditto(rec[f]) for f in BAR_FIELDS) and "ditto_assumed" not in flags:
+        exact = set(rec.get("symbol_fields", ())) & EXACT_ARROW_FIELDS
+        if any(_is_ditto(rec[f]) for f in BAR_FIELDS if f not in exact) and "ditto_assumed" not in flags:
             flags.append("ditto_unconfirmed")
         if any((rec[f] or "").strip() and not rec[f].strip()[0].isdigit() and check_notation(rec[f], "stirrup").get("asv_sv")
                for f in STIRRUP_FIELDS):
@@ -566,13 +573,45 @@ def _add_checks(rows):
 # highlight on their own, so the highlight keeps its meaning on a long AI-read table. formatting_removed: a CAD
 # cell lost underline / strike-through or stacked text, which can carry meaning.
 CONCERN_FLAGS = {"notation_invalid", "unreadable", "possible_typo", "conflict", "continuity_mismatch",
-                 "formatting_removed"}
+                 "formatting_removed", "symbol_unknown"}
 
 
-def needs_review(confidence, flags_text):
-    """A row needs extra care: low confidence or a concern flag (medium confidence alone does not)."""
-    flags = {f.strip() for f in str(flags_text or "").split(",") if f.strip()}
+def _flag_set(flags_text):
+    return {f.strip() for f in str(flags_text or "").split(",") if f.strip()}
+
+
+def is_assumed_link(link_type):
+    """The row's link type is the one whose leg count is assumed (parsers.ASSUMED_LINK), e.g. 'A1'."""
+    return str(link_type or "").strip().upper() == ASSUMED_LINK.link_type.upper()
+
+
+def _other_link_type(link_type):
+    """A link type is written and it is not the assumed one (e.g. A2): its leg count cannot be assumed."""
+    lt = str(link_type or "").strip()
+    return bool(lt) and lt.lower() != "nan" and not is_assumed_link(lt)
+
+
+def needs_review(confidence, flags_text, link_type=None):
+    """A row needs extra care: low confidence or a concern flag (medium confidence alone does not).
+
+    legs_not_stated is a concern only when a link type is written and is not the assumed one (ASSUMED_LINK), e.g.
+    A2 without a leg count. With the assumed type (A1) or no link type the flag stays in the Flags column only;
+    the review table states the A1 assumption once (assumed_legs_note).
+    """
+    flags = _flag_set(flags_text)
+    if "legs_not_stated" in flags and _other_link_type(link_type):
+        return True
     return confidence == "low" or bool(flags & CONCERN_FLAGS)
+
+
+def assumed_legs_note(table):
+    """One note for the review table when stirrups of the assumed link type have no leg count, else ''."""
+    n = sum(1 for f, lt in zip(table["Flags"], table["Link type"])
+            if "legs_not_stated" in _flag_set(f) and is_assumed_link(lt))
+    if not n:
+        return ""
+    return (f"{n} row{'s' if n != 1 else ''}: link type {ASSUMED_LINK.link_type} has no leg count; "
+            f"{ASSUMED_LINK.legs} legs assumed. Confirm against the drawing legend.")
 
 
 def prokon_concerns(table, prokon_beams):
@@ -651,8 +690,10 @@ def concern_rows(table, prokon_notes=None, conflicts=()):
     def live(flags):
         return ", ".join(f for f in str(flags or "").split(", ") if f.strip() != "conflict")
 
-    return pd.Series([needs_review(_cell(c), live(_cell(f))) or _cell(i) in notes or mark_key(_cell(m)) in dup
-                      for c, f, i, m in zip(table["Confidence"], table["Flags"], table["Row ID"], table["Beam mark"])],
+    return pd.Series([needs_review(_cell(c), live(_cell(f)), _cell(lt)) or _cell(i) in notes
+                      or mark_key(_cell(m)) in dup
+                      for c, f, lt, i, m in zip(table["Confidence"], table["Flags"], table["Link type"], table["Row ID"],
+                                                table["Beam mark"])],
                      index=table.index, dtype=bool)
 
 
@@ -811,8 +852,8 @@ def coverage(table, prokon_marks):
 def refresh_review_column(table):
     """Recompute the Review marker and put rows to check first (reading order otherwise kept)."""
     table = table.copy()
-    table["Review"] = [("⚠ possible typo" if "possible_typo" in str(f) else "⚠ check") if needs_review(c, f) else ""
-                       for c, f in zip(table["Confidence"], table["Flags"])]
+    table["Review"] = [("⚠ possible typo" if "possible_typo" in str(f) else "⚠ check") if needs_review(c, f, lt) else ""
+                       for c, f, lt in zip(table["Confidence"], table["Flags"], table["Link type"])]
     order = (table["Review"] == "").astype(int)  # rows to check first, otherwise keep reading order
     return table.assign(_o=order).sort_values("_o", kind="stable").drop(columns="_o").reset_index(drop=True)
 
@@ -961,7 +1002,8 @@ def schedule_summary(table, method, pdf_only, excel_only, n_prokon, n_found, not
         if mark:
             rows.append({"mark": mark, "page": _cell(r["Page"]), "read_from": _cell(r["Read from"]),
                          "confidence": _cell(r["Confidence"]), "flags": _cell(r["Flags"]),
-                         "needed_extra_care": needs_review(_cell(r["Confidence"]), _cell(r["Flags"]))})
+                         "needed_extra_care": needs_review(_cell(r["Confidence"]), _cell(r["Flags"]),
+                                                           _cell(r["Link type"]))})
     return {
         "schedule_source": "drawing",
         "reading_method": method,

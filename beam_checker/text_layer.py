@@ -39,6 +39,7 @@ class Word:
     x1: float
     y1: float
     flags: tuple = ()        # cell flags carried into the record (e.g. "formatting_removed" from CAD text)
+    symbol: bool = False     # text mapped from a known symbol-font glyph (e.g. a Wingdings 3 arrow): exact
 
     @property
     def cx(self):
@@ -177,11 +178,15 @@ def header_report(words, limit=20, cad_rules=False):
 
 
 def _record(mark_text, placed, row_box, source_note):
-    """One record from the words placed in each field's column: [(field, Word)] in reading order."""
-    cells, word_flags = {}, []
+    """One record from the words placed in each field's column: [(field, Word)] in reading order.
+
+    "symbol_fields" (only when there are any): fields whose whole cell is one known symbol-font glyph.
+    """
+    cells, word_flags, symbol = {}, [], {}
     for fld, w in placed:
         cells.setdefault(fld, []).append(w.text)
         word_flags.extend(w.flags)
+        symbol.setdefault(fld, []).append(w.symbol)
     rec = {f: "" for f in FIELDS}
     flags = list(dict.fromkeys(word_flags))
     for fld, texts in cells.items():
@@ -193,6 +198,9 @@ def _record(mark_text, placed, row_box, source_note):
                 flags.append("unreadable")
     rec["beam_mark"] = mark_text
     rec.update(confidence="high", flags=flags, source_note=source_note, row_box=row_box)
+    symbol_fields = [fld for fld, marks in symbol.items() if marks == [True]]
+    if symbol_fields:
+        rec["symbol_fields"] = symbol_fields
     return rec
 
 

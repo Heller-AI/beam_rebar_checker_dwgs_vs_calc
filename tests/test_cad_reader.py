@@ -561,3 +561,22 @@ def test_cad_only_flag_is_not_offered_to_the_ai():
 
     allowed = dr.RECORD_SCHEMA["properties"]["flags"]["items"]["enum"]
     assert "formatting_removed" not in allowed and "possible_typo" in allowed
+
+
+def test_exact_symbol_arrows_in_end_columns_are_not_flagged_as_ditto():
+    from beam_checker import drawing_reader as dr
+
+    L, R = (ARROWS, "!"), (ARROWS, '"')
+    rows = [
+        ["B101", "200x500", L, "2H16", R, L, "2H20", R, "-", "A1", L, "2H10-200", R, None, None],     # exact arrows
+        ["B102", "200x500", "2H16", L, "2H16", "2H16", "2H20", "2H16", "-", "A1", "2H10-200", "2H10-200",
+         "2H10-200", None, None],                                     # symbol arrow in the middle column: flagged
+        ["B103", "200x500", "→", "2H16", "←", "2H16", "2H20", "2H16", "-", "A1", "2H10-200", "2H10-200",
+         "2H10-200", None, None],                                     # arrows typed as ordinary text: flagged
+    ]
+    t = dr.read_cad(cr.read_dxf(grid_table_dxf([("BEAM SCHEDULE", rows, (0, 0))])).tables).table
+    flags = dict(zip(t["Beam mark"], t["Flags"]))
+    assert "ditto_unconfirmed" not in flags["B101"] and t.loc[t["Beam mark"] == "B101", "Review"].item() == ""
+    assert "ditto_unconfirmed" in flags["B102"] and "ditto_unconfirmed" in flags["B103"]
+    b101 = t[t["Beam mark"] == "B101"].iloc[0]
+    assert (b101["T1"], b101["T3"], b101["B1"], b101["B3"]) == ("←", "→", "←", "→")     # values unchanged

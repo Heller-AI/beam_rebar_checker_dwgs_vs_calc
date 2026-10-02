@@ -170,7 +170,8 @@ def _words_from_text(e, rotation_by_word):
     text = e.plain_text().strip()
     if not text:
         return []
-    text, symbol_flags = _symbol_text(text, [_style_font(e)])
+    shown, symbol_flags = _symbol_text(text, [_style_font(e)])
+    mapped, text = shown != text, shown
     h = e.dxf.get("height", 1.0) or 1.0
     wf = e.dxf.get("width", 1.0) or 1.0
     rot = e.dxf.get("rotation", 0.0) % 360
@@ -191,7 +192,7 @@ def _words_from_text(e, rotation_by_word):
             valign = 2
     y0 = {2: v - h / 2, 3: v - h}.get(valign, v)
     flags = ((FORMATTING_FLAG,) if _TEXT_FORMAT_RE.search(raw) else ()) + symbol_flags
-    word = text_layer.Word(text, x0, y0, x1, y0 + h, flags)
+    word = text_layer.Word(text, x0, y0, x1, y0 + h, flags, symbol=mapped)
     rotation_by_word[id(word)] = rot
     return [word]
 
@@ -224,11 +225,12 @@ def _words_from_mtext(e, rotation_by_word, cell_width=False):
     for i, line in enumerate(lines):
         if not line:
             continue
-        line, symbol_flags = _symbol_text(line, font_names)
+        shown, symbol_flags = _symbol_text(line, font_names)
+        mapped, line = shown != line, shown
         w = box_w or _text_width(e, line, h)
         x0 = (u, u - w / 2, u - w)[side]
         y1 = top - i * pitch
-        word = text_layer.Word(line, x0, y1 - h, x0 + w, y1, flags + symbol_flags)
+        word = text_layer.Word(line, x0, y1 - h, x0 + w, y1, flags + symbol_flags, symbol=mapped)
         rotation_by_word[id(word)] = rot
         words.append(word)
     return words

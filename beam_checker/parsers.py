@@ -2,6 +2,13 @@
 
 import math
 import re
+from collections import namedtuple
+
+# A stirrup written without a leg count (e.g. "H10-200") is counted with `legs` legs. On schedules that list a link
+# type, `link_type` is the type for which that is the convention (a single closed link), so its rows are not
+# highlighted for review; the review table states the assumption once. The only place these values are set.
+AssumedLink = namedtuple("AssumedLink", "link_type legs")
+ASSUMED_LINK = AssumedLink(link_type="A1", legs=2)
 
 EMPTY_VALUES = ["", "nan", "none", "-", "n.a", "n/a"]
 ARROW_CHARS = ["←", "→", "🡠", "🡢", "!", '"', "-", "—"]
@@ -73,7 +80,7 @@ def parse_bar_notation(notation_str):
 
 
 def parse_stirrup_single_str(notation_str):
-    """'2H10-200' or '2H10/200' -> (Asv/sv in mm²/mm, notation). Legs default to 2."""
+    """'2H10-200' or '2H10/200' -> (Asv/sv in mm²/mm, notation). Legs default to ASSUMED_LINK.legs (2)."""
     if not notation_str or str(notation_str).strip().lower() in EMPTY_VALUES:
         return 0.0, "-"
 
@@ -90,7 +97,7 @@ def parse_stirrup_single_str(notation_str):
         spacing = float(re.sub(r"[^\d.]", "", spacing_str))
         tokens = bar_part.split("H")
 
-        legs = int(tokens[0]) if (tokens[0] != "" and tokens[0].isdigit()) else 2
+        legs = int(tokens[0]) if (tokens[0] != "" and tokens[0].isdigit()) else ASSUMED_LINK.legs
         dia = float(tokens[1])
 
         if spacing > 0:
